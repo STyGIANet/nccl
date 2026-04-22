@@ -910,6 +910,8 @@ ib_recv_dev_list:
     }
   }
 
+  ncclIbComputeDevSpeeds(&comm->base);
+
   memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.vProps.ndevs;
 
@@ -1042,6 +1044,8 @@ ib_connect:
 
   // Store the number of remote devices
   comm->base.nRemDevs = remMeta.ndevs;
+  // Compute weights
+  ncclIbComputeLbWeights(&comm->base);
 
   // Store the remote GID information per-device provided by the remote peer
   for (int i = 0; i < comm->base.nRemDevs; i++) {

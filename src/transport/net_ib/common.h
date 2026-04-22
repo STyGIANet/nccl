@@ -82,6 +82,7 @@ struct alignas(64) ncclIbDev {
   uint8_t portNum;
   uint8_t link;
   int speed;
+  uint64_t currSpeed;
   ibv_context* context;
   int pdRefs;
   ibv_pd* pd;
@@ -113,6 +114,8 @@ struct alignas(64) ncclIbDev {
 extern struct ncclIbMergedDev ncclIbMergedDevs[MAX_IB_VDEVS];
 extern struct ncclIbDev ncclIbDevs[MAX_IB_DEVS];
 extern int ncclIbRelaxedOrderingEnabled;
+extern uint64_t ncclIbSpeedChangeCounter;
+extern int64_t ncclParamIbEventBasedLb();
 
 #define NCCL_IB_LLSTR(ll) \
   (((ll) == IBV_LINK_LAYER_INFINIBAND) ? "IB" : (((ll) == IBV_LINK_LAYER_ETHERNET) ? "RoCE" : "UNSPECIFIED"))
@@ -216,6 +219,8 @@ struct ncclIbRequest {
       uint32_t lkeys[NCCL_IB_MAX_DEVS_PER_NIC];
       // Tracks whether data was transmitted on a QP for this request.
       bool sentData[NCCL_IB_MAX_QPS];
+      // Per-device LB weights used for chunk computation.
+      uint8_t weights[NCCL_IB_MAX_DEVS_PER_NIC];
     } send;
     struct {
       struct ncclIbRequestCompletionRecord* cmplsRecords;
@@ -359,9 +364,40 @@ struct alignas(32) ncclIbNetCommBase {
   // statistics about the comm
   struct ncclIbStats stats;
   struct ncclIbResiliency* resiliency;
+  uint64_t speedChangeCounter;
+  uint64_t totalSpeed;
+  uint8_t weights[NCCL_IB_MAX_DEVS_PER_NIC];
+  uint64_t devSpeeds[NCCL_IB_MAX_DEVS_PER_NIC];
 };
 
+// Compute per-device LB weights (1-100); weight is never 0 since it is not considered a speed update but rather a port down.
+static inline void ncclIbComputeLbWeights(struct ncclIbNetCommBase* base) {
+  int ndevs = base->vProps.ndevs;
+  // totalSpeed can not be 0: devices with inactive ports (speed 0) are
+  // skipped at init, and speed-to-zero events are skipped in
+  // ncclIbUpdateDeviceSpeed (port-failover handles those).
+  assert(base->totalSpeed > 0);
+  uint8_t totalWeight = 0;
+  for (int d = 0; d < ndevs; d++) {
+    base->weights[d] = ncclParamIbEventBasedLb() ? (base->devSpeeds[d] * 100 / base->totalSpeed) : (100 / ndevs);
+    totalWeight += base->weights[d];
+  }
+  if (totalWeight < 100) {
+    base->weights[ndevs - 1] += (100 - totalWeight);
+  }
+}
+
 struct ncclIbNetCommDevBase* ncclIbGetNetCommDevBase(ncclIbNetCommBase* base, int devIndex);
+
+static inline void ncclIbComputeDevSpeeds(struct ncclIbNetCommBase* base) {
+  uint64_t totalSpeed = 0;
+  for (int d = 0; d < base->vProps.ndevs; d++) {
+    int ibDevN = ncclIbGetNetCommDevBase(base, d)->ibDevN;
+    base->devSpeeds[d] = COMPILER_ATOMIC_LOAD(&ncclIbDevs[ibDevN].currSpeed, std::memory_order_relaxed);
+    totalSpeed += base->devSpeeds[d];
+  }
+  base->totalSpeed = totalSpeed;
+}
 
 // qpIndex is the index relative to a device.
 // For example, if a device has 2 QPs, qpIndex can be 0 or 1.

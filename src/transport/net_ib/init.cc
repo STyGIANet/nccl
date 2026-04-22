@@ -410,6 +410,8 @@ ncclResult_t ncclIbInitDevices(ncclDebugLogger_t logFunction, ncclProfilerCallba
               int portSpeed = portAttr.active_speed_ex ? portAttr.active_speed_ex : portAttr.active_speed;
               ncclIbDevs[ncclNIbDevs].speed = ncclIbSpeed(portSpeed) * ncclIbWidth(portAttr.active_width);
             }
+            COMPILER_ATOMIC_STORE(&ncclIbDevs[ncclNIbDevs].currSpeed, (uint64_t)ncclIbDevs[ncclNIbDevs].speed,
+                                  std::memory_order_relaxed);
             ncclIbDevs[ncclNIbDevs].context = context;
             ncclIbDevs[ncclNIbDevs].pdRefs = 0;
             ncclIbDevs[ncclNIbDevs].pd = NULL;
