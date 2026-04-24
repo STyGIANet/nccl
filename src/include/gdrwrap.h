@@ -44,104 +44,6 @@ static inline void wc_store_fence(void) { asm volatile("dsb st" : : : "memory");
 #endif
 #endif
 
-//#define GDR_DIRECT 1
-#ifdef GDR_DIRECT
-// Call the GDR API library code directly rather than via
-// dlopen() wrappers
-#include <gdrapi.h>
-
-#if defined(GDR_API_MAJOR_VERSION) && defined(GDR_API_MINOR_VERSION) && \
-    (GDR_API_MAJOR_VERSION > 2 || (GDR_API_MAJOR_VERSION == 2 && GDR_API_MINOR_VERSION >= 6))
-#define NCCL_GDR_DIRECT_API_GE_2_6 1
-typedef gdr_info_v2_t ncclGdrInfo_t;
-#else
-#define NCCL_GDR_DIRECT_API_GE_2_6 0
-typedef gdr_info_t ncclGdrInfo_t;
-#endif
-
-static ncclResult_t wrap_gdr_symbols(void) { return ncclSuccess; }
-static gdr_t wrap_gdr_open(void) { gdr_t g = gdr_open(); return g; }
-static ncclResult_t wrap_gdr_close(gdr_t g) { GDRCHECK(gdr_close(g)); return ncclSuccess; }
-static ncclResult_t wrap_gdr_pin_buffer(gdr_t g, unsigned long addr, size_t size, uint64_t p2p_token, uint32_t va_space, gdr_mh_t *handle) {
-  GDRCHECK(gdr_pin_buffer(g, addr, size, p2p_token, va_space, handle));
-  return ncclSuccess;
-}
-
-static bool ncclGdrPinV2Available(void) {
-#if defined(GDR_API_MAJOR_VERSION) && defined(GDR_API_MINOR_VERSION)
-  return (GDR_API_MAJOR_VERSION > 2) || (GDR_API_MAJOR_VERSION == 2 && GDR_API_MINOR_VERSION >= 5);
-#else
-  return false;
-#endif
-}
-static ncclResult_t wrap_gdr_pin_buffer_v2(gdr_t g, unsigned long addr, size_t size, uint32_t flags, gdr_mh_t* handle) {
-  if (!ncclGdrPinV2Available()) {
-    WARN("gdr_pin_buffer_v2 not available; GDRCopy >= 2.5 required");
-    return ncclInternalError;
-  }
-  GDRCHECK(gdr_pin_buffer_v2(g, addr, size, flags, handle));
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_unpin_buffer(gdr_t g, gdr_mh_t handle) {
-  GDRCHECK(gdr_unpin_buffer(g, handle));
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_get_info(gdr_t g, gdr_mh_t handle, ncclGdrInfo_t *info) {
-#if NCCL_GDR_DIRECT_API_GE_2_6
-  GDRCHECK(gdr_get_info_v2(g, handle, info));
-#else
-  GDRCHECK(gdr_get_info(g, handle, info));
-#endif
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_map(gdr_t g, gdr_mh_t handle, void **va, size_t size) {
-  GDRCHECK(gdr_map(g, handle, va, size));
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_unmap(gdr_t g, gdr_mh_t handle, void *va, size_t size) {
-  GDRCHECK(gdr_unmap(g, handle, va, size));
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_runtime_get_version(int *major, int *minor) {
-  gdr_runtime_get_version(major, minor);
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_driver_get_version(gdr_t g, int *major, int *minor) {
-#if NCCL_GDR_DIRECT_API_GE_2_6
-  GDRCHECK(gdr_driver_get_version(g, major, minor));
-#else
-  gdr_driver_get_version(g, major, minor);
-#endif
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_get_attribute(gdr_t g, int attr, int *v) {
-#if NCCL_GDR_DIRECT_API_GE_2_6
-  GDRCHECK(gdr_get_attribute(g, (gdr_attr_t)attr, v));
-  return ncclSuccess;
-#else
-  return ncclInternalError;
-#endif
-}
-static ncclResult_t wrap_gdr_is_dma_buf_mmap(gdr_t g, int *v) {
-#if NCCL_GDR_DIRECT_API_GE_2_6
-  GDRCHECK(gdr_get_attribute(g, GDR_ATTR_USING_DMA_BUF_MMAP, v));
-  return ncclSuccess;
-#else
-  return ncclInternalError;
-#endif
-}
-static ncclResult_t wrap_gdr_copy_to_mapping(gdr_mh_t handle, void *map_d_ptr, const void *h_ptr, size_t size) {
-  GDRCHECK(gdr_copy_to_mapping(handle, map_d_ptr, h_ptr, size));
-  return ncclSuccess;
-}
-static ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void *h_ptr, const void *map_d_ptr, size_t size) {
-  GDRCHECK(gdr_copy_from_mapping(handle, h_ptr, map_d_ptr, size));
-  return ncclSuccess;
-}
-static bool ncclGdrIsInternalDmaBufBackend(void) { return false; }
-static bool ncclGdrInternalDmaBufRequired(void) { return false; }
-
-#else
 // Dynamically handle dependency on the GDR API library
 
 /* Extracted from gdrapi.h (v2.6 May 2026) */
@@ -212,8 +114,6 @@ ncclResult_t wrap_gdr_copy_to_mapping(gdr_mh_t handle, void *map_d_ptr, const vo
 ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void *h_ptr, const void *map_d_ptr, size_t size);
 bool ncclGdrIsInternalDmaBufBackend(void);
 bool ncclGdrInternalDmaBufRequired(void);
-
-#endif // GDR_DIRECT
 
 // Global GDR driver handle; set once during NCCL init.
 extern gdr_t ncclGdrCopy;

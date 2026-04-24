@@ -8,7 +8,6 @@
 #include "gdrwrap.h"
 #include <mutex>
 
-#ifndef GDR_DIRECT
 #include "cudawrap.h"
 #include "core.h"
 #include "os.h"
@@ -778,5 +777,3 @@ ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void* h_ptr, const void
   }
   return ncclSuccess;
 }
-
-#endif /* !GDR_DIRECT */
