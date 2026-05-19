@@ -27,6 +27,7 @@ project(NCCL VERSION ${NCCL_MAJOR}.${NCCL_MINOR}.${NCCL_PATCH}
 include(GNUInstallDirs)
 
 # Make CMAKE_BUILD_TYPE to release by default if not set
+set(_NCCL_USER_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
@@ -56,6 +57,18 @@ option(NCCL_EXACT_KERNEL_NAMES "Use one CUDA kernel wrapper per NCCL device func
 option(BUILD_NCCL4PY "Enable nccl4py Python bindings targets" OFF)
 option(BUILD_NCCL_EP "Build NCCL EP contrib library" OFF)
 
+# CMAKE_BUILD_TYPE=Debug is equivalent to -DDEBUG=ON, and vice versa (case-insensitive).
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _NCCL_BUILD_TYPE_UC)
+if(_NCCL_USER_BUILD_TYPE AND DEBUG AND NOT _NCCL_BUILD_TYPE_UC STREQUAL "DEBUG")
+    message(WARNING "NCCL: DEBUG=ON and CMAKE_BUILD_TYPE=${_NCCL_USER_BUILD_TYPE} are inconsistent; building Debug.")
+endif()
+if(_NCCL_BUILD_TYPE_UC STREQUAL "DEBUG")
+    set(DEBUG ON)
+endif()
+if(DEBUG)
+    set(CMAKE_BUILD_TYPE "Debug")
+endif()
+
 # Detect OS (use add_compile_definitions so CUDA .cu files get the define when built by NVCC)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(NCCL_OS_WINDOWS ON)
@@ -79,6 +92,14 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "C
 else()
     message(FATAL_ERROR "Unsupported compiler: ${CMAKE_CXX_COMPILER_ID}")
 endif()
+
+# Flag overrides applied when DEBUG=ON. Total replacement, not additive.
+if(NCCL_COMPILER_GCC)
+    set(DEBUG_HOST_FLAGS "-O0 -g -ggdb3" CACHE STRING "Host CXX flags applied when DEBUG=ON (overrides default)")
+elseif(NCCL_COMPILER_MSVC)
+    set(DEBUG_HOST_FLAGS "/Od /Zi /FS" CACHE STRING "Host CXX flags applied when DEBUG=ON (overrides default)")
+endif()
+set(DEBUG_DEVICE_FLAGS "-O0 -g -lineinfo" CACHE STRING "Device (NVCC) flags applied when DEBUG=ON (overrides default)")
 
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -247,16 +268,13 @@ if(RT_LIBRARY)
     list(APPEND EXTRA_LIBS rt)
 endif()
 
-# Debug/Release specific flags
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} ${DEBUG_HOST_FLAGS}")
 if(NCCL_COMPILER_GCC)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -O0")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -O3")
 elseif(NCCL_COMPILER_MSVC)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} /Od /Zi /FS")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} /O2 /FS")   # Maximum available optimization for MSVC
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} /O2 /FS")
 endif()
-
-set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS} -O0 -G -g")
+set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS} ${DEBUG_DEVICE_FLAGS}")
 set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS} -O3")
 
 if(NCCL_OS_LINUX)

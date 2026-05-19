@@ -10,6 +10,8 @@ PREFIX ?= /usr/local
 VERBOSE ?= 0
 KEEP ?= 0
 DEBUG ?= 0
+DEBUG_HOST_FLAGS ?= -O0 -g -ggdb3
+DEBUG_DEVICE_FLAGS ?= -O0 -g -lineinfo
 ASAN ?= 0
 UBSAN ?= 0
 TSAN ?= 0
@@ -128,8 +130,9 @@ ifeq ($(DEBUG), 0)
 NVCUFLAGS += -O3
 CXXFLAGS  += -O3 -g
 else
-NVCUFLAGS += -O0 -G -g
-CXXFLAGS  += -O0 -g -ggdb3
+NVCUFLAGS += $(DEBUG_DEVICE_FLAGS)
+NVCUFLAGS_SYM += $(DEBUG_DEVICE_FLAGS)
+CXXFLAGS  += $(DEBUG_HOST_FLAGS)
 endif
 
 # Make sure to run with ASAN_OPTIONS=protect_shadow_gap=0 otherwise CUDA will fail with OOM
