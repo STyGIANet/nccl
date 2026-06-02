@@ -18,11 +18,13 @@ ncclResult_t ncclTuningCollnetModelInit(struct ncclComm* comm, int id, int enabl
   int algo, proto;
   NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr));
 
-  // Disable CollNet+Direct if not on an NVSwitch system
+  // Disable CollNet+Direct on non-NVSwitch systems with multiple local ranks.
+  // Keep CollNet+Chain disabled on non-NVSwitch systems.
   if (comm->config.collnetEnable == 0) {
     int nvsCount = 0;
     NCCLCHECK(ncclTopoGetNvsCount(comm->topo, &nvsCount));
-    if (nvsCount == 0) {
+    if (nvsCount == 0 &&
+        (algo == NCCL_ALGO_COLLNET_CHAIN || (algo == NCCL_ALGO_COLLNET_DIRECT && comm->maxLocalRanks > 1))) {
       memset(enabled, 0, NCCL_NUM_FUNCTIONS * sizeof(int));
       return ncclSuccess;
     }
