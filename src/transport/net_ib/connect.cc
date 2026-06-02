@@ -1685,6 +1685,9 @@ ncclResult_t ncclIbAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle
 ncclResult_t ncclIbCloseSend(void* sendComm) {
   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
   if (comm) {
+    for (int q = 0; q < comm->base.nqps; q++)
+      ncclIbWqeLatReportQpSummary(&comm->base, comm->base.qps[q].devIndex, &comm->base.qps[q]);
+
     NCCLCHECK(ncclSocketClose(&comm->base.sock));
 
     for (int q = 0; q < comm->base.nqps; q++) {

@@ -15,14 +15,18 @@
 #include <time.h>
 
 NCCL_PARAM(IbWqeLatencyThresholdNs, "IB_WQE_LATENCY_THRESHOLD_NS", 0);
+NCCL_PARAM(IbWqeLatencyStallNs, "IB_WQE_LATENCY_STALL_NS", 0);
+NCCL_PARAM(IbWqeLatencyReport, "IB_WQE_LATENCY_REPORT", 1);
 
 bool ncclIbWqeLatEnabled = false;
 uint64_t ncclIbWqeLatThresholdNs = 0;
 uint64_t ncclIbWqeLatStallNs = 0;
+bool ncclIbWqeLatReportEnabled = false;
 
 static const uint64_t kWarnIntervalNs = 1000000000ULL;
 static const uint64_t kStallFloorNs = 1000000ULL;
 static const uint64_t kStallMultiple = 4;
+static const double kPctlTargets[NCCL_IB_WQE_LAT_NUM_PCTL] = {0.50, 0.90, 0.99, 0.999};
 
 static void ensureInitialized(void) {
   static std::once_flag once;
@@ -30,8 +34,14 @@ static void ensureInitialized(void) {
     int64_t thr = ncclParamIbWqeLatencyThresholdNs();
     if (thr <= 0) return;
     ncclIbWqeLatThresholdNs = (uint64_t)thr;
-    uint64_t stall = (uint64_t)thr * kStallMultiple;
-    ncclIbWqeLatStallNs = stall < kStallFloorNs ? kStallFloorNs : stall;
+    int64_t stallParam = ncclParamIbWqeLatencyStallNs();
+    if (stallParam > 0) {
+      ncclIbWqeLatStallNs = (uint64_t)stallParam;
+    } else {
+      uint64_t stall = (uint64_t)thr * kStallMultiple;
+      ncclIbWqeLatStallNs = stall < kStallFloorNs ? kStallFloorNs : stall;
+    }
+    ncclIbWqeLatReportEnabled = ncclParamIbWqeLatencyReport() != 0;
     ncclIbWqeLatEnabled = true;
   });
 }
@@ -42,9 +52,105 @@ uint64_t ncclIbWqeLatMonNowNs(void) {
   return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+// Jain & Chlamtac P^2: 5 markers, no stored samples, O(1) per observation.
+
+static void p2Init(struct ncclIbP2Quantile* e, double p) {
+  e->p = p;
+  for (int i = 0; i < 5; i++) {
+    e->q[i] = 0.0;
+    e->n[i] = 0;
+  }
+}
+
+static void p2SortAsc(double* a, int n) {
+  for (int i = 1; i < n; i++) {
+    double key = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > key) {
+      a[j + 1] = a[j];
+      j--;
+    }
+    a[j + 1] = key;
+  }
+}
+
+static void p2Update(struct ncclIbP2Quantile* e, double x, uint64_t count) {
+  if (count <= 5) {
+    e->q[count - 1] = x;
+    if (count == 5) {
+      p2SortAsc(e->q, 5);
+      for (int i = 0; i < 5; i++) e->n[i] = (uint64_t)(i + 1);
+    }
+    return;
+  }
+
+  const double p = e->p;
+  const double f[5] = {0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0};
+
+  int k;
+  if (x < e->q[0]) {
+    e->q[0] = x;
+    k = 0;
+  } else if (x >= e->q[4]) {
+    e->q[4] = x;
+    k = 3;
+  } else {
+    k = 0;
+    for (int i = 1; i < 5; i++) {
+      if (x < e->q[i]) {
+        k = i - 1;
+        break;
+      }
+    }
+  }
+
+  for (int i = k + 1; i < 5; i++) e->n[i] += 1;
+
+  for (int i = 1; i <= 3; i++) {
+    double ni = (double)e->n[i];
+    double nim1 = (double)e->n[i - 1];
+    double nip1 = (double)e->n[i + 1];
+    double npi = 1.0 + (double)(count - 1) * f[i];
+    double d = npi - ni;
+    if ((d >= 1.0 && (nip1 - ni) > 1.0) || (d <= -1.0 && (nim1 - ni) < -1.0)) {
+      int s = (d >= 0.0) ? 1 : -1;
+      double qim1 = e->q[i - 1], qi = e->q[i], qip1 = e->q[i + 1];
+      double qNew = qi + ((double)s / (nip1 - nim1)) * ((ni - nim1 + (double)s) * (qip1 - qi) / (nip1 - ni) +
+                                                        (nip1 - ni - (double)s) * (qi - qim1) / (ni - nim1));
+      if (qim1 < qNew && qNew < qip1) {
+        e->q[i] = qNew;
+      } else if (s == 1) {
+        e->q[i] = qi + (qip1 - qi) / (nip1 - ni);
+      } else {
+        e->q[i] = qi - (qi - qim1) / (ni - nim1);
+      }
+      e->n[i] = (uint64_t)((int64_t)e->n[i] + s);
+    }
+  }
+}
+
+static uint64_t p2Estimate(const struct ncclIbP2Quantile* e, uint64_t count) {
+  if (count == 0) return 0;
+  double v;
+  if (count >= 5) {
+    v = e->q[2];
+  } else {
+    double tmp[5];
+    int n = (int)count;
+    for (int i = 0; i < n; i++) tmp[i] = e->q[i];
+    p2SortAsc(tmp, n);
+    int idx = (int)ceil(e->p * (double)n) - 1;
+    if (idx < 0) idx = 0;
+    if (idx >= n) idx = n - 1;
+    v = tmp[idx];
+  }
+  return v < 0.0 ? 0 : (uint64_t)(v + 0.5);
+}
+
 void ncclIbWqeLatMonInit(struct ncclIbWqeLatMon* m) {
   ensureInitialized();
   memset(m, 0, sizeof(*m));
+  for (int i = 0; i < NCCL_IB_WQE_LAT_NUM_PCTL; i++) p2Init(&m->p2[i], kPctlTargets[i]);
 }
 
 void ncclIbWqeLatMonStampSend(struct ncclIbQp* qp, struct ibv_send_wr* head) {
@@ -78,6 +184,7 @@ static void welfordUpdate(struct ncclIbWqeLatMon* m, uint64_t deltaNs) {
 static void snapshotStats(const struct ncclIbWqeLatMon* m, struct ncclIbWqeLatStats* out) {
   if (!out) return;
   out->count = m->count;
+  out->slowCount = m->slowCount;
   out->meanNs = m->meanNs;
   out->maxNs = m->maxNs;
   if (m->count > 1) {
@@ -86,6 +193,16 @@ static void snapshotStats(const struct ncclIbWqeLatMon* m, struct ncclIbWqeLatSt
   } else {
     out->stddevNs = 0.0;
   }
+  out->p50Ns = p2Estimate(&m->p2[0], m->count);
+  out->p90Ns = p2Estimate(&m->p2[1], m->count);
+  out->p99Ns = p2Estimate(&m->p2[2], m->count);
+  out->p999Ns = p2Estimate(&m->p2[3], m->count);
+}
+
+void ncclIbWqeLatMonSnapshot(const struct ncclIbWqeLatMon* m, struct ncclIbWqeLatStats* out) {
+  if (!out) return;
+  memset(out, 0, sizeof(*out));
+  snapshotStats(m, out);
 }
 
 bool ncclIbWqeLatMonOnComplete(struct ncclIbWqeLatMon* m, uint64_t tPollNs, uint64_t* outDeltaNs, uint64_t* outPostNs,
@@ -107,11 +224,13 @@ bool ncclIbWqeLatMonOnComplete(struct ncclIbWqeLatMon* m, uint64_t tPollNs, uint
 
   uint64_t delta = (tPollNs > tPostNs) ? tPollNs - tPostNs : 0;
   welfordUpdate(m, delta);
+  for (int i = 0; i < NCCL_IB_WQE_LAT_NUM_PCTL; i++) p2Update(&m->p2[i], (double)delta, m->count);
   if (outDeltaNs) *outDeltaNs = delta;
   if (outPostNs) *outPostNs = tPostNs;
   snapshotStats(m, outStats);
 
   if (delta <= ncclIbWqeLatThresholdNs) return false;
+  m->slowCount++;
   if (m->lastWarnNs && (tPollNs - m->lastWarnNs) < kWarnIntervalNs) return false;
   m->lastWarnNs = tPollNs;
   return true;
@@ -175,11 +294,13 @@ static void reportSlow(struct ncclIbNetCommBase* base, int devIndex, struct nccl
   getPeerInfo(base, devIndex, qp, &p);
   WARN("NET/IB: WQE slow: peer=%s | local: qpn=%u dev=%s port=%u lid=%u localGid=%s | "
        "remote: qpn=%u port=%u lid=%u remoteGid=%s | "
-       "thr=%luns delta=%luns mean=%.0fns stddev=%.0fns max=%luns count=%lu | "
+       "thr=%luns delta=%luns mean=%.0fns stddev=%.0fns "
+       "p50=%luns p90=%luns p99=%luns p99.9=%luns max=%luns count=%lu | "
        "t_post=%lu t_poll=%lu",
        p.sock, qpn, p.hca, qp->rtrAttr.localIbPort, (unsigned)p.localLid, p.localGid, qp->rtrAttr.remoteQpNum,
        (unsigned)p.peerPort, (unsigned)p.remoteLid, p.remoteGid, (unsigned long)ncclIbWqeLatThresholdNs,
-       (unsigned long)deltaNs, s->meanNs, s->stddevNs, (unsigned long)s->maxNs, (unsigned long)s->count,
+       (unsigned long)deltaNs, s->meanNs, s->stddevNs, (unsigned long)s->p50Ns, (unsigned long)s->p90Ns,
+       (unsigned long)s->p99Ns, (unsigned long)s->p999Ns, (unsigned long)s->maxNs, (unsigned long)s->count,
        (unsigned long)tPostNs, (unsigned long)tPollNs);
 }
 
@@ -229,4 +350,20 @@ void ncclIbWqeLatScanStalls(struct ncclIbNetCommBase* base, int devIndex) {
       reportStall(base, devIndex, qp, age, inflight);
     }
   }
+}
+
+void ncclIbWqeLatReportQpSummary(struct ncclIbNetCommBase* base, int devIndex, struct ncclIbQp* qp) {
+  if (!ncclIbWqeLatEnabled || !ncclIbWqeLatReportEnabled) return;
+  if (qp == NULL || qp->qp == NULL || qp->latMon.count == 0) return;
+  struct ncclIbWqeLatStats s;
+  ncclIbWqeLatMonSnapshot(&qp->latMon, &s);
+  struct peerInfo p;
+  getPeerInfo(base, devIndex, qp, &p);
+  INFO(NCCL_NET,
+       "NET/IB: WQE latency summary [%s peer=%s dev=%s qpn=%u port=%u]: "
+       "n=%lu slow=%lu thr=%luns | post-to-poll ns: mean=%.0f std=%.0f "
+       "p50=%lu p90=%lu p99=%lu p99.9=%lu max=%lu",
+       base->isSend ? "send" : "recv", p.sock, p.hca, qp->qp->qp_num, qp->rtrAttr.localIbPort, (unsigned long)s.count,
+       (unsigned long)s.slowCount, (unsigned long)ncclIbWqeLatThresholdNs, s.meanNs, s.stddevNs, (unsigned long)s.p50Ns,
+       (unsigned long)s.p90Ns, (unsigned long)s.p99Ns, (unsigned long)s.p999Ns, (unsigned long)s.maxNs);
 }

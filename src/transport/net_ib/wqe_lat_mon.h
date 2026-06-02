@@ -22,8 +22,16 @@
 extern bool ncclIbWqeLatEnabled;
 extern uint64_t ncclIbWqeLatThresholdNs;
 extern uint64_t ncclIbWqeLatStallNs;
+extern bool ncclIbWqeLatReportEnabled;
 
 uint64_t ncclIbWqeLatMonNowNs(void);
+
+#define NCCL_IB_WQE_LAT_NUM_PCTL 4
+struct ncclIbP2Quantile {
+  double p;
+  double q[5];
+  uint64_t n[5];
+};
 
 struct ncclIbWqeLatMon {
   uint64_t trackedPostNs;
@@ -35,6 +43,9 @@ struct ncclIbWqeLatMon {
   double meanNs;
   double m2Ns;
   uint64_t maxNs;
+  uint64_t slowCount;
+
+  struct ncclIbP2Quantile p2[NCCL_IB_WQE_LAT_NUM_PCTL];
 
   uint64_t lastWarnNs;
   uint64_t lastStallWarnNs;
@@ -42,9 +53,14 @@ struct ncclIbWqeLatMon {
 
 struct ncclIbWqeLatStats {
   uint64_t count;
+  uint64_t slowCount;
   double meanNs;
   double stddevNs;
   uint64_t maxNs;
+  uint64_t p50Ns;
+  uint64_t p90Ns;
+  uint64_t p99Ns;
+  uint64_t p999Ns;
 };
 
 struct ncclIbQp;
@@ -60,9 +76,13 @@ bool ncclIbWqeLatMonOnComplete(struct ncclIbWqeLatMon* m, uint64_t tPollNs, uint
 
 bool ncclIbWqeLatMonCheckStall(struct ncclIbWqeLatMon* m, uint64_t nowNs, uint64_t* outAgeNs, uint32_t* outInflight);
 
+void ncclIbWqeLatMonSnapshot(const struct ncclIbWqeLatMon* m, struct ncclIbWqeLatStats* out);
+
 void ncclIbWqeLatHandleCompletion(struct ncclIbNetCommBase* base, int devIndex, struct ibv_wc* wc, uint64_t* tPollNs,
                                   bool* tPollNsValid);
 
 void ncclIbWqeLatScanStalls(struct ncclIbNetCommBase* base, int devIndex);
+
+void ncclIbWqeLatReportQpSummary(struct ncclIbNetCommBase* base, int devIndex, struct ncclIbQp* qp);
 
 #endif  // NET_IB_WQE_LAT_MON_H_
