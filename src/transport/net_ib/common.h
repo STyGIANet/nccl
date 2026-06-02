@@ -30,6 +30,7 @@
 
 #include "ibvwrap.h"
 #include "mlx5/mlx5dvwrap.h"
+#include "wqe_lat_mon.h"
 
 #define MAXSUFFIXSIZE 16
 #define MAXNAMESIZE (64 + MAXSUFFIXSIZE)
@@ -312,6 +313,7 @@ struct ncclIbQp {
   // The index of the device on the remote side to which this QP is connected
   // to.
   int remDevIdx;
+  struct ncclIbWqeLatMon latMon;
 };
 
 // We need to support NCCL_NET_MAX_REQUESTS for each concurrent receive

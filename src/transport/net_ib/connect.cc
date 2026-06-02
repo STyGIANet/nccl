@@ -7,6 +7,7 @@
 
 #include "connect.h"
 #include "common.h"
+#include "p2p.h"
 #include "p2p_resiliency.h"
 
 NCCL_PARAM(IbGidIndex, "IB_GID_INDEX", -1);
@@ -365,6 +366,7 @@ static ncclResult_t ncclIbCreateQpMlx5(struct ncclIbQpCreateAttr* createQpAttrs,
 }
 
 ncclResult_t ncclIbQpCreate(struct ncclIbQp* qp, struct ncclIbQpCreateAttr* createQpAttrs) {
+  ncclIbWqeLatMonInit(&qp->latMon);
   if (createQpAttrs->oooRq) {
     NCCLCHECK(ncclIbCreateQpMlx5(createQpAttrs, qp));
     return ncclSuccess;

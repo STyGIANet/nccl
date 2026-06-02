@@ -247,6 +247,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
         currWr = currWr->next;
       }
 #endif // ENABLE_TRACE
+      if (ncclIbWqeLatEnabled) ncclIbWqeLatMonStampSend(qp, comm->wrs);
       NCCLCHECK(wrap_ibv_post_send(qp->qp, comm->wrs, &bad_wr));
     }
 
@@ -952,8 +953,10 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
       NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, 4, wcs, &wrDone));
       if (wrDone == 0) TIME_CANCEL(3);
       else TIME_STOP(3);
-      if (wrDone == 0) continue;
       totalWrDone += wrDone;
+
+      uint64_t tPollNs = 0;
+      bool tPollNsValid = false;
       for (int w = 0; w < wrDone; w++) {
         struct ibv_wc* wc = wcs + w;
         if (wc->status != IBV_WC_SUCCESS) {
@@ -972,12 +975,20 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
           }
           NCCLCHECK(ncclIbResiliencyHandleCompletionError(r->base->resiliency, wc, i));
         } else {
+          if (ncclIbWqeLatEnabled) ncclIbWqeLatHandleCompletion(r->base, i, wc, &tPollNs, &tPollNsValid);
           TRACE(NCCL_NET,
                 "NET/IB: %s: Processing a completion event (devIndex=%d, comm=%p (%s), req=%p, wr_id=%lu, qp_num=%d)",
                 __func__, i, r->base, r->base->isSend ? "send" : "recv", r, wc->wr_id, wc->qp_num);
           NCCLCHECK(ncclIbCompletionEventProcess(r->base, wc, i));
         }
       }
+
+      // Scan for stalled (late/missing-CQE) WQEs on every poll, including
+      // iterations where poll_cq returned zero, so a hung WQE is caught
+      // even when no completions are flowing.
+      if (ncclIbWqeLatEnabled) ncclIbWqeLatScanStalls(r->base, i);
+
+      if (wrDone == 0) continue;
       // Once the IB fatal event is reported in the async thread, we want to propagate this error
       // to communicator and prevent further polling to reduce error pollution.
       NCCLCHECK(ncclIbStatsCheckFatalCount(&ncclIbDevs[r->devBases[i]->ibDevN].stats, __func__));
