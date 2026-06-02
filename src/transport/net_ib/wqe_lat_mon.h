@@ -21,7 +21,6 @@
 
 extern bool ncclIbWqeLatEnabled;
 extern uint64_t ncclIbWqeLatThresholdNs;
-extern uint64_t ncclIbWqeLatStallNs;
 extern bool ncclIbWqeLatReportEnabled;
 
 uint64_t ncclIbWqeLatMonNowNs(void);

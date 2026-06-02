@@ -15,17 +15,13 @@
 #include <time.h>
 
 NCCL_PARAM(IbWqeLatencyThresholdNs, "IB_WQE_LATENCY_THRESHOLD_NS", 0);
-NCCL_PARAM(IbWqeLatencyStallNs, "IB_WQE_LATENCY_STALL_NS", 0);
 NCCL_PARAM(IbWqeLatencyReport, "IB_WQE_LATENCY_REPORT", 1);
 
 bool ncclIbWqeLatEnabled = false;
 uint64_t ncclIbWqeLatThresholdNs = 0;
-uint64_t ncclIbWqeLatStallNs = 0;
 bool ncclIbWqeLatReportEnabled = false;
 
-static const uint64_t kWarnIntervalNs = 1000000000ULL;
-static const uint64_t kStallFloorNs = 1000000ULL;
-static const uint64_t kStallMultiple = 4;
+static const uint64_t kReportIntervalNs = 1000000000ULL;
 static const double kPctlTargets[NCCL_IB_WQE_LAT_NUM_PCTL] = {0.50, 0.90, 0.99, 0.999};
 
 static void ensureInitialized(void) {
@@ -34,13 +30,6 @@ static void ensureInitialized(void) {
     int64_t thr = ncclParamIbWqeLatencyThresholdNs();
     if (thr <= 0) return;
     ncclIbWqeLatThresholdNs = (uint64_t)thr;
-    int64_t stallParam = ncclParamIbWqeLatencyStallNs();
-    if (stallParam > 0) {
-      ncclIbWqeLatStallNs = (uint64_t)stallParam;
-    } else {
-      uint64_t stall = (uint64_t)thr * kStallMultiple;
-      ncclIbWqeLatStallNs = stall < kStallFloorNs ? kStallFloorNs : stall;
-    }
     ncclIbWqeLatReportEnabled = ncclParamIbWqeLatencyReport() != 0;
     ncclIbWqeLatEnabled = true;
   });
@@ -231,7 +220,7 @@ bool ncclIbWqeLatMonOnComplete(struct ncclIbWqeLatMon* m, uint64_t tPollNs, uint
 
   if (delta <= ncclIbWqeLatThresholdNs) return false;
   m->slowCount++;
-  if (m->lastWarnNs && (tPollNs - m->lastWarnNs) < kWarnIntervalNs) return false;
+  if (m->lastWarnNs && (tPollNs - m->lastWarnNs) < kReportIntervalNs) return false;
   m->lastWarnNs = tPollNs;
   return true;
 }
@@ -246,8 +235,8 @@ bool ncclIbWqeLatMonCheckStall(struct ncclIbWqeLatMon* m, uint64_t nowNs, uint64
   if (outAgeNs) *outAgeNs = age;
   if (outInflight) *outInflight = m->inflight;
 
-  if (age <= ncclIbWqeLatStallNs) return false;
-  if (m->lastStallWarnNs && (nowNs - m->lastStallWarnNs) < kWarnIntervalNs) return false;
+  if (age <= ncclIbWqeLatThresholdNs) return false;
+  if (m->lastStallWarnNs && (nowNs - m->lastStallWarnNs) < kReportIntervalNs) return false;
   m->lastStallWarnNs = nowNs;
   return true;
 }
@@ -292,7 +281,8 @@ static void reportSlow(struct ncclIbNetCommBase* base, int devIndex, struct nccl
                        uint64_t deltaNs, uint64_t tPostNs, uint64_t tPollNs, const struct ncclIbWqeLatStats* s) {
   struct peerInfo p;
   getPeerInfo(base, devIndex, qp, &p);
-  WARN("NET/IB: WQE slow: peer=%s | local: qpn=%u dev=%s port=%u lid=%u localGid=%s | "
+  INFO(NCCL_NET,
+       "NET/IB: WQE slow: peer=%s | local: qpn=%u dev=%s port=%u lid=%u localGid=%s | "
        "remote: qpn=%u port=%u lid=%u remoteGid=%s | "
        "thr=%luns delta=%luns mean=%.0fns stddev=%.0fns "
        "p50=%luns p90=%luns p99=%luns p99.9=%luns max=%luns count=%lu | "
@@ -308,12 +298,13 @@ static void reportStall(struct ncclIbNetCommBase* base, int devIndex, struct ncc
                         uint32_t inflight) {
   struct peerInfo p;
   getPeerInfo(base, devIndex, qp, &p);
-  WARN("NET/IB: WQE stall (no CQE): peer=%s | local: qpn=%u dev=%s port=%u lid=%u localGid=%s | "
+  INFO(NCCL_NET,
+       "NET/IB: WQE stall (no CQE): peer=%s | local: qpn=%u dev=%s port=%u lid=%u localGid=%s | "
        "remote: qpn=%u port=%u lid=%u remoteGid=%s | "
        "stall_thr=%luns age=%luns inflight=%u",
        p.sock, qp->qp->qp_num, p.hca, qp->rtrAttr.localIbPort, (unsigned)p.localLid, p.localGid,
        qp->rtrAttr.remoteQpNum, (unsigned)p.peerPort, (unsigned)p.remoteLid, p.remoteGid,
-       (unsigned long)ncclIbWqeLatStallNs, (unsigned long)ageNs, inflight);
+       (unsigned long)ncclIbWqeLatThresholdNs, (unsigned long)ageNs, inflight);
 }
 
 }  // namespace
