@@ -351,10 +351,14 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
     }
   }
   if (remainCell < cellPerChannel) curChannel++;
+  // At this point, curChannel indexes the first _empty_ channel.
 
   memcpy(&argsBuf->kcomm, &comm->symkState.kcomm, sizeof(comm->symkState.kcomm));
   plan->workBytes = totalCount * ncclTypeSize(headTask->datatype);
-  plan->channelMask = uint64_t(-1) >> (64 - curChannel);
+  // curChannel == 0 is not expected here (the caller ensures symTaskQueue is
+  // non-empty), but guard it anyway to avoid the undefined behavior of shifting
+  // a 64-bit value by 64 bits (Coverity BAD_SHIFT).
+  plan->channelMask = curChannel == 0 ? 0 : (uint64_t(-1) >> (64 - curChannel));
   plan->kernelSymArgs = (void*)argsBuf;
   plan->workStorageType = ncclDevWorkStorageTypeArgs;
 
