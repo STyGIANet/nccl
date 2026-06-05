@@ -26,6 +26,7 @@ LIBSRCFILES := \
 	$(TRANSPORT_CC) \
 	$(wildcard transport/net_ib/*.cc) \
 	$(wildcard transport/net_ib/gdaki/*.cc) \
+	$(wildcard transport/net_ib/gdaki/gpucontext/*.cc) \
 	$(wildcard register/*.cc) \
 	$(wildcard plugin/*.cc) \
 	$(wildcard plugin/net/*.cc) \
@@ -37,6 +38,7 @@ LIBSRCFILES := \
 	$(wildcard nccl_device/*.cc) \
 	$(wildcard scheduler/*.cc) \
 	$(wildcard gin/*.cc) \
+	$(wildcard gin/proxy_gpucontext/*.cc) \
 	$(wildcard rma/*.cc) \
 	$(wildcard devcomm/*.cc) \
 	$(wildcard tuning/*.cc) \

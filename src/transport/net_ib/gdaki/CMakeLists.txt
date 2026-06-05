@@ -68,5 +68,10 @@ set(DOCA_SOURCES ${DOCA_SOURCES} PARENT_SCOPE)
 # Add DOCA_HOME to parent scope
 set(DOCA_HOME ${DOCA_HOME} PARENT_SCOPE)
 
-# Add gin_host_gdaki.cc to TRANSPORT_SOURCES in parent scope
-set(TRANSPORT_SOURCES ${TRANSPORT_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/gin_host_gdaki.cc PARENT_SCOPE)
+# Add gin_host_gdaki.cc to TRANSPORT_SOURCES
+set(TRANSPORT_SOURCES ${TRANSPORT_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/gin_host_gdaki.cc)
+
+add_subdirectory(gpucontext)
+
+# Propagate TRANSPORT_SOURCES to parent scope
+set(TRANSPORT_SOURCES ${TRANSPORT_SOURCES} PARENT_SCOPE)

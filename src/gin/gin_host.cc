@@ -235,7 +235,7 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
     nVersions = sizeof(gpiBackendMinVersions) / sizeof(int);
     break;
   default:
-    WARN("Cannot get backend version for invalid GIN type %d", backend->ginType);
+    WARN("Cannot get backend version for unsupported GIN type %d", backend->ginType);
     return ncclInternalError;
   }
 

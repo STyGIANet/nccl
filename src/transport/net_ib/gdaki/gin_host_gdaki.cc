@@ -480,7 +480,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, int nSignals, int nCounte
   ncclResult_t status = ncclSuccess;
 
   if (backendVersion < 0 || backendVersion > NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION) {
-    WARN("Invalid GIN gdaki backend version %d", backendVersion);
+    WARN("Invalid GIN GDAKI backend version %d", backendVersion);
     return ncclInternalError;
   }
 
@@ -894,6 +894,7 @@ out:
       if (gdaki_ctx->companion_gqps) free(gdaki_ctx->companion_gqps);
 
       if (gdaki_ctx->gdev) doca_gpu_destroy(gdaki_ctx->gdev);
+      free(gdaki_ctx->gin_gdaki_gpu_ctx_host_staging);
     }
 
     if (devHandle) free(devHandle);
@@ -901,7 +902,6 @@ out:
     if (sink_buffer_mr) wrap_ibv_dereg_mr(sink_buffer_mr);
     if (sink_buffer) ncclCuMemFree(sink_buffer, nullptr);
 
-    if (gdaki_ctx->gin_gdaki_gpu_ctx_host_staging) free(gdaki_ctx->gin_gdaki_gpu_ctx_host_staging);
     if (gin_gdaki_gpu_ctx_hd_mhandle) delete gin_gdaki_gpu_ctx_hd_mhandle;
     if (counters_table) delete counters_table;
     if (signals_table) delete signals_table;
