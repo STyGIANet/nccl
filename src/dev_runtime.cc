@@ -1491,6 +1491,10 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
     props->nLsaTeams = comm->devrState.nLsaTeams;
   }
 
+  if (props->version >= NCCL_VERSION(2, 31, 0)) {
+    props->commHash = comm->commHash;
+  }
+
   if (devCompat->commPropertiesFilter) {
     NCCLCHECK(devCompat->commPropertiesFilter(comm, props));
   }

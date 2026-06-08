@@ -189,6 +189,7 @@ struct ncclCommProperties {
   int nLsaTeams;
   bool hostRmaSupport;
   ncclGinType_t railedGinType;
+  uint64_t commHash;
 };
 
 NCCL_EXTERN_C __host__ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* props);
