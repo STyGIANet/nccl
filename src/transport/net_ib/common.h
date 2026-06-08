@@ -617,17 +617,21 @@ static inline void printIbWcStatusHint(int status) {
   switch (status) {
   case IBV_WC_LOC_PROT_ERR:
     INFO(NCCL_NET,
-         "HINT: In many cases this error occurs when ACS is enabled which would break GPU Direct RDMA protocol.");
-    INFO(NCCL_NET, "HINT: To confirm and fix the problem, you can set NCCL_NET_GDR_LEVEL=0 to disable ACS following "
-                   "vendor documentation.");
+         "HINT: In many cases this error indicates that ACS is enabled, which breaks the GPU Direct RDMA protocol.");
+    INFO(NCCL_NET, "HINT: To confirm, set NCCL_NET_GDR_LEVEL=0; if that resolves it, "
+                   "disable ACS following your vendor documentation.");
+    return;
   case IBV_WC_WR_FLUSH_ERR:
-    INFO(NCCL_NET, "HINT: In many cases this error occurs when NIC on the same instance cannot talk to each other.");
+    INFO(NCCL_NET, "HINT: In many cases this error indicates that NICs on the same node cannot talk to each other.");
+    INFO(NCCL_NET, "HINT: To confirm, use a lower level tool like ib_write_bw to communicate across NICs on the same "
+                   "node.");
+    return;
   case IBV_WC_RETRY_EXC_ERR:
-    INFO(NCCL_NET, "HINT: In many cases this error occurs when the NCCL_IB_TIMEOUT is set too short.");
-    INFO(NCCL_NET, "HINT: Default value is 20, which is ~30 seconds before error.");
-    INFO(NCCL_NET, "HINT: To confirm, try increasing the value of NCCL_IB_TIMEOUT and see if the error persists.");
-    INFO(NCCL_NET, "HINT: See https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-timeout for "
-                   "more information.");
+    INFO(NCCL_NET, "HINT: In many cases this error indicates that NCCL_IB_TIMEOUT is set too short (the default value "
+                   "is 20, which is ~30 seconds before timing out).");
+    INFO(NCCL_NET, "HINT: To confirm, increase NCCL_IB_TIMEOUT (see "
+                   "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-timeout).");
+    return;
   default:
     break;
   }

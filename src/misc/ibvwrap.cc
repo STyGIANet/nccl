@@ -336,17 +336,16 @@ print:
 static void printIbModifyQpHint(int status) {
   switch (status) {
   case ETIMEDOUT:
-    INFO(NCCL_NET, "HINT: In many cases this error occurs when NICs are not cross-rail connected.");
-    INFO(NCCL_NET, "HINT: To confirm, you can set NCCL_CROSS_NIC=0 to disable cross-rail communication.");
-    INFO(NCCL_NET, "HINT: See https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cross-nic for "
-                   "more information.");
+    INFO(NCCL_NET, "HINT: In many cases this error indicates that the NICs are not cross-rail connected.");
+    INFO(NCCL_NET, "HINT: To confirm, set NCCL_CROSS_NIC=0 to disable cross-rail communication (see "
+                   "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cross-nic).");
     return;
   case EINVAL:
-    INFO(NCCL_NET, "HINT: In many cases this error occurs when the incorrect GID index is forced by NCCL_IB_GID_INDEX");
-    INFO(NCCL_NET,
-         "HINT: To confirm and fix the problem, you can set NCCL_IB_GID_INDEX=-1 to enable automatic detection.");
-    INFO(NCCL_NET, "HINT: See https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-gid-index for "
-                   "more information.");
+    INFO(NCCL_NET, "HINT: In many cases this error indicates that an incorrect GID index is forced by "
+                   "NCCL_IB_GID_INDEX, or that a NIC's GID changed mid-run.");
+    INFO(NCCL_NET, "HINT: To confirm, set NCCL_IB_GID_INDEX=-1 to enable automatic detection and check "
+                   "'dmesg | grep -i gid' for GID changes (see "
+                   "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-gid-index).");
     return;
   default:
     break;

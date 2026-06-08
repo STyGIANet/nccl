@@ -27,6 +27,25 @@ extern CUmemAllocationHandleType ncclCuMemHandleType;
 
 #define CUPFN(symbol) pfn_##symbol
 
+// Emit an actionable hint for a subset of well-known CUDA driver errors.
+static inline void printCudaDriverErrorHint(CUresult err) {
+  switch (err) {
+  case CUDA_ERROR_TOO_MANY_PEERS:
+    INFO(NCCL_ALL, "HINT: In many cases this error indicates that the GPU peer-mapping (BAR1 P2P) resources are "
+                   "exhausted, which can happen on nodes with more than 8 GPUs.");
+    INFO(NCCL_ALL, "HINT: To confirm, set NCCL_CUMEM_ENABLE=0 to fall back to the legacy allocator.");
+    return;
+  case CUDA_ERROR_NOT_READY:
+    INFO(NCCL_ALL, "HINT: In many cases this error indicates that the IMEX (NVLink fabric) service is not running or "
+                   "is misconfigured on MNNVL systems.");
+    INFO(NCCL_ALL, "HINT: To confirm, run 'nvidia-imex-ctl -N' (which may require elevated privileges) "
+                   "to check the IMEX channel and domain status.");
+    return;
+  default:
+    break;
+  }
+}
+
 // Check CUDA PFN driver calls
 #define CUCHECK(cmd) \
   do { \
@@ -35,6 +54,7 @@ extern CUmemAllocationHandleType ncclCuMemHandleType;
       const char* errStr; \
       (void)pfn_cuGetErrorString(err, &errStr); \
       WARN("Cuda failure %d '%s'", err, errStr); \
+      printCudaDriverErrorHint(err); \
       return ncclUnhandledCudaError; \
     } \
   } while (false)
@@ -51,6 +71,7 @@ extern CUmemAllocationHandleType ncclCuMemHandleType;
       const char* errStr; \
       (void)pfn_cuGetErrorString(err, &errStr); \
       WARN("Cuda failure %d '%s'", err, errStr); \
+      printCudaDriverErrorHint(err); \
       res = ncclUnhandledCudaError; \
       goto label; \
     } \
