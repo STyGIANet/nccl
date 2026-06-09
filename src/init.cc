@@ -40,6 +40,8 @@
 #include "rma/rma.h"
 #include "tuning.h"
 
+#include <cinttypes>
+
 #define STR2(v) #v
 #define STR(v) STR2(v)
 
@@ -377,8 +379,9 @@ static ncclResult_t commFree(ncclComm_t comm) {
 
   NCCLCHECK(ncclRegCleanup(comm));
 
-  INFO(NCCL_DESTROY, "comm %p rank %d nranks %d cudaDev %d busId %lx - %s COMPLETE", comm, comm->rank, comm->nRanks,
-       comm->cudaDev, comm->busId, abort ? "Abort" : "Destroy");
+  TRACE_CALL("%s(%p)", (abort ? "ncclCommAbort" : "ncclCommDestroy"), comm);
+  INFO(NCCL_DESTROY, "comm %p rank %d nranks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - %s COMPLETE", comm,
+       comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash, abort ? "Abort" : "Destroy");
 
   commPoison(comm); // poison comm before free to avoid comm reuse.
   NCCLCHECK(ncclProfilerThreadDestroy(comm));
@@ -623,7 +626,8 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   } else {
     comm->workFifoBytes = ncclParamWorkFifoBytes();
     if (0 != (comm->workFifoBytes & (comm->workFifoBytes - 1))) {
-      WARN("NCCL_WORK_FIFO_BYTES=%d is being ignored because it is not a power of 2.", comm->workFifoBytes);
+      INFO(NCCL_INIT | NCCL_ENV, "NCCL_WORK_FIFO_BYTES=%d is being ignored because it is not a power of 2",
+           comm->workFifoBytes);
       comm->workFifoBytes = NCCL_WORK_FIFO_BYTES_DEFAULT;
     }
     comm->workFifoBytes = std::min(comm->workFifoBytes, 1u << 30);
@@ -1921,10 +1925,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     timers[TIMER_INIT_ALLOC] = clockNano() - timers[TIMER_INIT_ALLOC];
     comm->isGrow = false;
     INFO(NCCL_INIT,
-         "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx parent %p childCount %d color %d key %d- Init "
-         "START",
-         job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, job->parent,
-         job->childCount, job->color, job->key);
+         "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%" PRIx64 " parent %p childCount %d "
+         "color %d key %d - Init START",
+         job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, comm->commHash,
+         job->parent, job->childCount, job->color, job->key);
     timers[TIMER_INIT_BOOTSTRAP] = clockNano();
     NCCLCHECKGOTO(bootstrapSplit(comm->commHash, comm, job->parent, job->color, job->key, parentRanks), res, fail);
     timers[TIMER_INIT_BOOTSTRAP] = clockNano() - timers[TIMER_INIT_BOOTSTRAP];
@@ -1973,10 +1977,10 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
                  comm->nRanks);
     }
     INFO(NCCL_INIT,
-         "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx parent %p childCount %d color %d key %d - Init "
-         "COMPLETE",
-         job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, job->parent,
-         job->childCount, job->color, job->key);
+         "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%" PRIx64 " parent %p childCount %d "
+         "color %d key %d - Init COMPLETE",
+         job->funcName, comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, comm->commHash,
+         job->parent, job->childCount, job->color, job->key);
   } else {
     // the name for the replay tool is ncclCommInitRank for all the variations
     TRACE_CALL("ncclCommInitRank(%p, %d, 0x%llx, %d, %d)", comm, comm->nRanks, commIdHash, comm->rank, comm->cudaDev);
@@ -2269,8 +2273,9 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
 
   // If POLICY_ZERO and POLICY_EFFICIENCY are set in CTAPolicy, unset POLICY_EFFICIENCY.
   if ((comm->config.CTAPolicy & NCCL_CTA_POLICY_ZERO) && (comm->config.CTAPolicy & NCCL_CTA_POLICY_EFFICIENCY)) {
-    WARN("Both NCCL_CTA_POLICY_ZERO and NCCL_CTA_POLICY_EFFICIENCY are set in CTAPolicy (%d). Unsetting "
-         "POLICY_EFFICIENCY.",
+    INFO(NCCL_ENV,
+         "Both NCCL_CTA_POLICY_ZERO and NCCL_CTA_POLICY_EFFICIENCY are set in CTAPolicy (%d). "
+         "Unsetting POLICY_EFFICIENCY",
          comm->config.CTAPolicy);
     comm->config.CTAPolicy &= ~NCCL_CTA_POLICY_EFFICIENCY;
   }
@@ -2439,7 +2444,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
 
   if (internalConfigPtr->graphUsageMode != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->graphUsageMode != 0 &&
       internalConfigPtr->graphUsageMode != 1 && internalConfigPtr->graphUsageMode != 2) {
-    WARN("Invalig config graphUsageMode attribute value %d", internalConfigPtr->graphUsageMode);
+    WARN("Invalid config graphUsageMode attribute value %d", internalConfigPtr->graphUsageMode);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2524,8 +2529,8 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
 
   // Warn and fall back when graphStreamOrdering=0 is combined with graphUsageMode=2 (unsupported).
   if (comm->config.graphStreamOrdering == 0 && comm->config.graphUsageMode == 2) {
-    WARN("graphStreamOrdering=0 with graphUsageMode=2 (graph mixing) is not supported; "
-         "falling back to graphStreamOrdering=1 for this communicator");
+    INFO(NCCL_INIT, "graphStreamOrdering=0 with graphUsageMode=2 (graph mixing) is not supported; "
+                    "falling back to graphStreamOrdering=1 for this communicator");
     comm->config.graphStreamOrdering = 1;
   }
 
@@ -2806,10 +2811,10 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
 
   if (comm->initState == ncclSuccess) {
     if ((ret = ncclStrongStreamSynchronize(&comm->sharedRes->hostStream)) != ncclSuccess) {
-      WARN("commDestroySync: comm %p rank %d sync hostStream error %d", comm, comm->rank, ret);
+      INFO(NCCL_DESTROY, "commDestroySync: comm %p rank %d sync hostStream error %d", comm, comm->rank, ret);
     }
     if ((ret = ncclStrongStreamSynchronize(&comm->sharedRes->deviceStream)) != ncclSuccess) {
-      WARN("commDestroySync: comm %p rank %d sync deviceStream error %d", comm, comm->rank, ret);
+      INFO(NCCL_DESTROY, "commDestroySync: comm %p rank %d sync deviceStream error %d", comm, comm->rank, ret);
     }
 
     NCCLCHECKGOTO(ncclCommPollEventCallbacks(comm, true), ret, fail);
@@ -2821,7 +2826,8 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
     while (!ncclIntruQueueEmpty(&comm->legacyRegCleanupQueue)) {
       struct ncclCommCallback* cb = ncclIntruQueueDequeue(&comm->legacyRegCleanupQueue);
       if (cb->fn(comm, cb) != ncclSuccess) {
-        WARN("Legacy IPC cleanup callback failed comm %p (rank = %d) cb %p", comm, comm->rank, cb);
+        INFO(NCCL_DESTROY | NCCL_REG, "Legacy IPC cleanup callback failed comm %p (rank = %d) cb %p", comm, comm->rank,
+             cb);
       }
     }
     if (*comm->abortFlag == 0) {
@@ -2848,7 +2854,11 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   }
 
   if ((ret = ncclProxyStop(comm)) != ncclSuccess) {
-    WARN("ncclProxyStop: comm %p (rank = %d) destroys proxy resource error %d", comm, comm->rank, ret);
+    INFO(NCCL_DESTROY | NCCL_PROXY, "commDestroySync: comm %p (rank = %d) proxy stop error %d", comm, comm->rank, ret);
+  } else if (comm->finalizeCalled) {
+    TRACE_CALL("ncclCommFinalize(%p)", comm);
+    INFO(NCCL_DESTROY, "comm %p rank %d nranks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Finalize COMPLETE", comm,
+         comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash);
   }
 
 exit:
@@ -2873,6 +2883,9 @@ ncclResult_t ncclCommFinalize(ncclComm_t comm) {
 
   NCCLCHECK(ncclGroupStartInternal());
   if (comm == NULL) goto exit;
+
+  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Finalize START", comm,
+       comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash);
 
   /* wait comm ready before finalize. */
   NCCLCHECKGOTO(ncclCommEnsureReady(comm), ret, fail);
@@ -2998,7 +3011,8 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
 
   NVTX3_FUNC_WITH_PARAMS(CommDestroy, NcclNvtxParamsCommInitRank, NVTX3_PAYLOAD(comm->commHash, nranks, rank, cudaDev));
 
-  TRACE(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx", comm, rank, nranks, cudaDev, comm->busId);
+  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Destroy START", comm, rank,
+       nranks, cudaDev, comm->busId, comm->commHash);
   NCCLCHECK(ncclGroupStartInternal());
   // Try and prevent a double free of the comm struct (user error)
   if (comm->rank == -1 || comm->nRanks == -1 || comm->cudaDev == -1 || comm->busId == -1) {
@@ -3055,7 +3069,8 @@ static ncclResult_t commRevokeAsync(struct ncclAsyncJob* job_) {
   {
     ncclResult_t _tmpret = ncclSuccess;
     if ((_tmpret = ncclProxyStop(comm)) != ncclSuccess) {
-      WARN("ncclProxyStop: comm %p (rank = %d) destroys proxy resource error %d", comm, comm->rank, _tmpret);
+      INFO(NCCL_DESTROY | NCCL_PROXY, "ncclProxyStop: comm %p (rank = %d) destroys proxy resource error %d", comm,
+           comm->rank, _tmpret);
     }
     if (comm->proxyState && comm->proxyRefCountOld == 0 && comm->proxyState->thread.joinable()) {
       comm->proxyState->thread.join();
@@ -3090,8 +3105,8 @@ ncclResult_t ncclCommRevoke(ncclComm_t comm, int revokeFlags) {
   if (comm->revokedFlag) {
     return ncclInvalidArgument;
   }
-  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx - Revoke START", comm, comm->rank, comm->nRanks,
-       comm->cudaDev, comm->busId);
+  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Revoke START", comm,
+       comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash);
 
   NCCLCHECK(ncclGroupStartInternal());
   (void)setCommAbortFlags(comm, 1);
@@ -3123,8 +3138,8 @@ exit:
     NVTX3_RANGE_ADD_PAYLOAD(CommRevoke, NcclNvtxParamsCommInitRankSchema,
                             NVTX3_PAYLOAD(comm->commHash, nranks, rank, cudaDev));
   }
-  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx - Revoke COMPLETE, result %d", comm, rank, nranks,
-       cudaDev, comm->busId, res);
+  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Revoke COMPLETE, result %d",
+       comm, rank, nranks, cudaDev, comm->busId, comm->commHash, res);
   return res;
 fail:
   if (comm && !comm->config.blocking) (void)ncclCommSetAsyncError(comm, res);
@@ -3139,8 +3154,8 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
     return ncclSuccess;
   }
 
-  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx - Abort START", comm, comm->rank, comm->nRanks,
-       comm->cudaDev, comm->busId);
+  INFO(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx commId 0x%" PRIx64 " - Abort START", comm,
+       comm->rank, comm->nRanks, comm->cudaDev, comm->busId, comm->commHash);
 
   NCCLCHECK(ncclGroupStartInternal());
   // Ask anything that might still be running on the device to quit
