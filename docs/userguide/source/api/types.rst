@@ -305,6 +305,34 @@ ncclConfig_t
   application guarantees ordering of **all** NCCL communication kernels that
   may run concurrently on the GPU.
 
+ .. c:macro:: launchOrderImplicit
+
+  (since 2.31)
+
+  Per-communicator request for :ref:`NCCL_LAUNCH_ORDER_IMPLICIT`.
+  ``1`` enables implicit launch ordering for this communicator; ``0`` disables
+  it. ``NCCL_CONFIG_UNDEF_INT`` is the default and has the same effective
+  behavior as ``0``.
+
+  Communicators with different effective values can coexist. Overlap safety is
+  about communication operations that may run concurrently on the same GPU:
+
+  * Operations on disabled/default communicators retain the existing
+    multiple-communicator ordering guarantees.
+  * Operations on enabled communicators may overlap with operations on other
+    enabled communicators if the application follows the host-side ordering
+    requirements described for :ref:`NCCL_LAUNCH_ORDER_IMPLICIT`.
+  * Operations on enabled communicators must not overlap with operations on
+    disabled/default communicators. The application must order or synchronize
+    those operations so they do not overlap, or configure the communicators
+    consistently.
+
+  NCCL warns if a CUDA context has used both enabled and disabled/default
+  effective values, but it still initializes the communicator.
+
+  If :ref:`NCCL_LAUNCH_ORDER_IMPLICIT` is set in the environment, it overrides
+  this field before initialization.
+
  .. c:macro:: maxP2pPeers
 
   Set the maximum number of peers any rank will concurrently communicate with using P2P communication. Setting this value will influence all send/recv and send/recv-based collectives (all-to-all, scatter, gather). Values less than one or greater than the number of ranks will default to the number of ranks in the communicator.

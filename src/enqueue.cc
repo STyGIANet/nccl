@@ -1535,7 +1535,6 @@ static void persistentDestructor(void* plans_) {
   }
 }
 
-NCCL_PARAM(LaunchOrderImplicit, "LAUNCH_ORDER_IMPLICIT", 0);
 NCCL_PARAM(GraphStreamOrdering, "GRAPH_STREAM_ORDERING", NCCL_CONFIG_UNDEF_INT);
 
 namespace {
@@ -1551,8 +1550,9 @@ static bool ncclGraphStreamOrderingSerialize(struct ncclComm* comm) {
 }
 } // namespace
 
-static ncclResult_t getImplicitOrder(enum ncclImplicitOrder* mode, bool capturing, int driver = -1) {
-  if (ncclParamLaunchOrderImplicit()) {
+static ncclResult_t getImplicitOrder(enum ncclImplicitOrder* mode, struct ncclComm* comm, bool capturing,
+                                     int driver = -1) {
+  if (comm->config.launchOrderImplicit == 1) {
     if (driver < 0) NCCLCHECK(ncclCudaDriverVersion(&driver));
     if (capturing && driver < 12090) {
       *mode = ncclImplicitOrderSerial;
@@ -1678,7 +1678,7 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
 
     enum ncclImplicitOrder implicitOrder;
     cudaError_t status = cudaSuccess;
-    NCCLCHECKGOTO(getImplicitOrder(&implicitOrder, capturing), result, failure);
+    NCCLCHECKGOTO(getImplicitOrder(&implicitOrder, comm, capturing), result, failure);
 
     if (implicitOrder != ncclImplicitOrderNone) {
       // userStream[0] waits on per-device (context) launchOrder. Concurrent strong stream access is
@@ -1806,7 +1806,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
 #endif
 #if CUDART_VERSION >= 12030
     enum ncclImplicitOrder implicitOrder;
-    NCCLCHECKGOTO(getImplicitOrder(&implicitOrder, plan->persistent, driverVersion), ret, do_return);
+    NCCLCHECKGOTO(getImplicitOrder(&implicitOrder, comm, plan->persistent, driverVersion), ret, do_return);
     if (implicitOrder == ncclImplicitOrderLaunch) {
       launchAttrs[attrs].id = CU_LAUNCH_ATTRIBUTE_LAUNCH_COMPLETION_EVENT;
       launchAttrs[attrs].value.launchCompletionEvent.event = comm->sharedRes->launchEvent;
@@ -1920,7 +1920,7 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
       CUDACHECK(cudaStreamWaitEvent(l->stream, finishedEvent, 0));
     }
     enum ncclImplicitOrder implicitOrder;
-    NCCLCHECK(getImplicitOrder(&implicitOrder, capturing));
+    NCCLCHECK(getImplicitOrder(&implicitOrder, comm, capturing));
     if (implicitOrder != ncclImplicitOrderNone) {
       // As in ncclLaunchPrepare, strong stream can be non-concurrent when non-captured.
       bool concurrent = capturing;

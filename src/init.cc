@@ -66,6 +66,7 @@ NCCL_PARAM(NumRmaCtx, "NUM_RMA_CTX", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(MaxP2pPeers, "P2P_MAX_PEERS", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(SetCpuStackSize, "SET_CPU_STACK_SIZE", 1);
 NCCL_PARAM(MultiRankGpuEnable, "MULTI_RANK_GPU_ENABLE", 0);
+NCCL_PARAM(LaunchOrderImplicit, "LAUNCH_ORDER_IMPLICIT", NCCL_CONFIG_UNDEF_INT);
 
 extern int64_t ncclParamSingleProcMemRegEnable();
 
@@ -386,7 +387,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
     NCCLCHECK(ncclGinFinalize(comm));
     NCCLCHECK(ncclRmaFinalize(comm));
   }
-  ncclCudaContextDrop(comm->context);
+  if (comm->context) ncclCudaContextDrop(comm->context);
   free(comm);
 
   return ncclSuccess;
@@ -507,7 +508,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
     NCCLCHECK(ncclMemManagerInit(comm));
   }
 
-  NCCLCHECK(ncclCudaContextTrack(&comm->context));
+  NCCLCHECK(ncclCudaContextTrack(&comm->context, comm->config.launchOrderImplicit, comm->commHash));
 
   NCCLCHECK(getBusId(comm->cudaDev, &comm->busId));
   nvmlDevice_t nvmlDev;
@@ -1987,6 +1988,7 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   int nvlinkUtilCentricSchedEnableEnv;
   int graphMixingSupportEnv;
   int graphStreamOrderingEnv;
+  int launchOrderImplicitEnv;
   int numRmaCtxEnv;
   int maxP2pPeersEnv;
   const char* checkModeEnv;
@@ -2108,6 +2110,20 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
              graphStreamOrderingEnv);
       }
       comm->config.graphStreamOrdering = graphStreamOrderingEnv;
+    }
+  }
+
+  launchOrderImplicitEnv = ncclParamLaunchOrderImplicit();
+  if (launchOrderImplicitEnv != NCCL_CONFIG_UNDEF_INT) {
+    if (launchOrderImplicitEnv != 0 && launchOrderImplicitEnv != 1) {
+      INFO(NCCL_ENV, "NCCL_LAUNCH_ORDER_IMPLICIT %d is not valid, leaving it set at %d", launchOrderImplicitEnv,
+           comm->config.launchOrderImplicit);
+    } else {
+      if (comm->config.launchOrderImplicit != NCCL_CONFIG_UNDEF_INT) {
+        INFO(NCCL_ENV, "Comm config launchOrderImplicit reset to NCCL_LAUNCH_ORDER_IMPLICIT=%d",
+             launchOrderImplicitEnv);
+      }
+      comm->config.launchOrderImplicit = launchOrderImplicitEnv;
     }
   }
 
@@ -2303,6 +2319,10 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
     if (internalConfigPtr->version < NCCL_VERSION(2, 30, 5)) {
       internalConfigPtr->graphStreamOrdering = defaultConfig.graphStreamOrdering;
     }
+
+    if (internalConfigPtr->version < NCCL_VERSION(2, 31, 0)) {
+      internalConfigPtr->launchOrderImplicit = defaultConfig.launchOrderImplicit;
+    }
   }
 
   /* check input config attributes, -1 means user-undefined and we should use default value from NCCL. */
@@ -2403,6 +2423,13 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
     goto fail;
   }
 
+  if (internalConfigPtr->launchOrderImplicit != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->launchOrderImplicit != 0 &&
+      internalConfigPtr->launchOrderImplicit != 1) {
+    WARN("Invalid config launchOrderImplicit attribute value %d", internalConfigPtr->launchOrderImplicit);
+    ret = ncclInvalidArgument;
+    goto fail;
+  }
+
   /* default config value can be tuned on different platform. */
   NCCL_CONFIG_DEFAULT(internalConfigPtr, blocking, NCCL_CONFIG_UNDEF_INT, 1, "Blocking", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, cgaClusterSize, NCCL_CONFIG_UNDEF_INT, 4, "CGA cluster size", "%d");
@@ -2427,6 +2454,8 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
                       "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, graphStreamOrdering, NCCL_CONFIG_UNDEF_INT, NCCL_CONFIG_UNDEF_INT,
                       "graphStreamOrdering", "%d");
+  NCCL_CONFIG_DEFAULT(internalConfigPtr, launchOrderImplicit, NCCL_CONFIG_UNDEF_INT, NCCL_CONFIG_UNDEF_INT,
+                      "launchOrderImplicit", "%d");
 
   /* assign config to communicator */
   comm->config.blocking = internalConfigPtr->blocking;
@@ -2447,6 +2476,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   comm->config.numRmaCtx = internalConfigPtr->numRmaCtx;
   comm->config.maxP2pPeers = internalConfigPtr->maxP2pPeers;
   comm->config.graphStreamOrdering = internalConfigPtr->graphStreamOrdering;
+  comm->config.launchOrderImplicit = internalConfigPtr->launchOrderImplicit;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
   // Resolve to system default (serialize) if neither user config nor env var set it.

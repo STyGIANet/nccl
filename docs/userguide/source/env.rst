@@ -1845,6 +1845,10 @@ NCCL_LAUNCH_ORDER_IMPLICIT
 
 Implicitly order NCCL operations from different communicators on the same device using the host program order. This ensures the operations will not deadlock. When the CUDA runtime and driver are 12.3+, overlapped execution is permitted. On older CUDA versions the operations will be serialized.
 
+For per-communicator configuration, see the :c:macro:`launchOrderImplicit`
+field in :ref:`ncclconfig`. If this environment variable is set, it overrides
+that communicator config field before initialization.
+
 Values accepted
 ^^^^^^^^^^^^^^^
 Default is 0 (disabled); set to 1 to enable.
