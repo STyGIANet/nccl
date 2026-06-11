@@ -58,7 +58,8 @@ ncclResult_t ncclCudaContextTrack(struct ncclCudaContext** out, int launchOrderI
     }
     if (p->hcontext == hcontext) {
       if (launchOrderImplicitEnabled ? p->launchOrderImplicitEverDisabled : p->launchOrderImplicitEverEnabled) {
-        WARN("commHash 0x%lx uses config launchOrderImplicit=%d after this CUDA context used the opposite value. "
+        INFO(NCCL_INIT,
+             "commHash 0x%lx uses config launchOrderImplicit=%d after this CUDA context used the opposite value. "
              "Only overlap communication with communicators that share the same launchOrderImplicit settings.",
              (unsigned long)commHash, launchOrderImplicitEnabled ? 1 : 0);
       }

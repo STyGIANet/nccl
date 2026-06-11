@@ -327,8 +327,8 @@ ncclConfig_t
     those operations so they do not overlap, or configure the communicators
     consistently.
 
-  NCCL warns if a CUDA context has used both enabled and disabled/default
-  effective values, but it still initializes the communicator.
+  NCCL logs an ``INFO`` message if a CUDA context has used both enabled and
+  disabled/default effective values, but it still initializes the communicator.
 
   If :ref:`NCCL_LAUNCH_ORDER_IMPLICIT` is set in the environment, it overrides
   this field before initialization.
