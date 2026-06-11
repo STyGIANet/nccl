@@ -2792,6 +2792,27 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
         WARN("Legacy IPC cleanup callback failed comm %p (rank = %d) cb %p", comm, comm->rank, cb);
       }
     }
+    if (*comm->abortFlag == 0) {
+      int* hostRanks;
+      int hostRank = 0;
+      int nHostRanks = 0;
+      // Wait for all host-local ranks before stopping the proxy threads, to ensure that PXN connection establishment
+      // can complete if some ranks were to try destroying the communicator early.  As an optimization, filter
+      // comm->localRanks to the local host only, since on MNNVL systems it can include other hosts, while PXN is
+      // strictly host-local.
+      NCCLCHECKGOTO(ncclCalloc(&hostRanks, comm->localRanks), ret, fail);
+      for (int i = 0; i < comm->localRanks; i++) {
+        if (comm->peerInfo[comm->localRankToRank[i]].hostHash == comm->peerInfo[comm->rank].hostHash) {
+          if (i == comm->localRank) hostRank = nHostRanks;
+          hostRanks[nHostRanks++] = comm->localRankToRank[i];
+        }
+      }
+      if ((ret = bootstrapIntraNodeBarrier(comm->bootstrap, hostRanks, hostRank, nHostRanks, hostRanks[0])) !=
+          ncclSuccess) {
+        INFO(NCCL_DESTROY, "commDestroySync: comm %p rank %d intranode barrier error %d", comm, comm->rank, ret);
+      }
+      free(hostRanks);
+    }
   }
 
   if ((ret = ncclProxyStop(comm)) != ncclSuccess) {
@@ -2870,8 +2891,11 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
     if (curRankCnt == intraRanks) {
       ncclComm_t curIntraComm;
       ncclComm_t nextIntraComm = intracomm0;
+      std::thread* intraThreads = nullptr;
+      int nIntraThreads = 0;
+      if (curRankCnt > 1) NEW_NOTHROW_GOTO(intraThreads, std::thread[curRankCnt - 1], ret, exit);
 
-      /* this is  the last call to ncclCommDestroy/Abort, we need to make sure all comms
+      /* this is the last call to ncclCommDestroy/Abort, we need to make sure all comms
        * in the process have been finalized before we free local resources. */
       while (nextIntraComm) {
         curIntraComm = nextIntraComm;
@@ -2879,16 +2903,34 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
         nextIntraComm = nextIntraComm->intraNext;
 
         if (curIntraComm->finalizeCalled == false) {
-          struct ncclCommFinalizeAsyncJob job;
-          job.comm = curIntraComm;
-          /* every comm aborts, commDestroySync should not be blocked. */
-          NOWARN(ret = commDestroySync((struct ncclAsyncJob*)&job), NCCL_DESTROY);
-          if (ret != ncclSuccess) {
-            INFO(NCCL_DESTROY, "commReclaim: comm %p (rank = %d) in commDestroySync, error %d", curIntraComm, curRank,
-                 ret);
+          // Launch commDestroySync for each rank on a separate thread so that they can complete the intranode barrier.
+          auto lbd = [](ncclComm_t curIntraComm, int curRank) {
+            struct ncclCommFinalizeAsyncJob job;
+            ncclResult_t ret;
+            job.comm = curIntraComm;
+            // commDestroySync calls cudaSetDevice so we don't need to do it here.
+            NOWARN(ret = commDestroySync((struct ncclAsyncJob*)&job), NCCL_DESTROY);
+            if (ret != ncclSuccess) {
+              INFO(NCCL_DESTROY, "commReclaim: comm %p (rank = %d) in commDestroySync, error %d", curIntraComm, curRank,
+                   ret);
+            }
+          };
+          // Don't launch in the background if this is the last comm (takes care of 1 GPU/process as well).
+          if (nextIntraComm) {
+            STDTHREADCREATE_GOTO(intraThreads[nIntraThreads], lbd, ret, exit, curIntraComm, curRank);
+            // Note: we can't do thread cleanup in case the above fails.  join() would hang (the already launched
+            // threads are stuck waiting for their peers) and attempting to delete an active thread object triggers
+            // process termination.
+            nIntraThreads++;
+          } else {
+            lbd(curIntraComm, curRank);
           }
         }
       }
+      for (int i = 0; i < nIntraThreads; i++) {
+        intraThreads[i].join();
+      }
+      delete[] intraThreads;
 
       /* free local resources. */
       nextIntraComm = intracomm0;
@@ -2907,7 +2949,7 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
       }
     }
   }
-
+exit:
   return ncclSuccess;
 }
 
