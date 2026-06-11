@@ -8,14 +8,17 @@
 #include "param.h"
 #include "checks.h"
 #include "comm.h"
-#include "enqueue.h"
 #include "utils.h"
 #include "proxy.h"
 #include "profiler.h"
 #include "transport.h"
 #include "plugin.h"
 #include "compiler.h"
+#include "device.h"
 #include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <chrono>
 #include "os.h"
 
 extern ncclProfiler_t* getNcclProfiler_v1(void* lib);
@@ -24,6 +27,50 @@ extern ncclProfiler_t* getNcclProfiler_v3(void* lib);
 extern ncclProfiler_t* getNcclProfiler_v4(void* lib);
 extern ncclProfiler_t* getNcclProfiler_v5(void* lib);
 extern ncclProfiler_t* getNcclProfiler_v6(void* lib);
+
+// Observability threshold for pending+active ops. We keep enqueueing beyond
+// this so KernelCh events stay paired with their parent task events.
+#define NCCL_PROFILER_DEFAULT_MAX_INFLIGHT (MAXCHANNELS * MAX_PROFILER_EVENTS_PER_CHANNEL * 4)
+
+struct ncclProfilerThread {
+  std::thread thread;
+  std::mutex mutex;
+  std::condition_variable cond;
+  // Signalled when iterationActive transitions to false; lets a concurrent
+  // ncclProfilerThreadDestroy wait for an in-flight progress pass to finish.
+  std::condition_variable condIterationInactive;
+  int stop;
+  int refCount;
+  // Captured at thread-create so a defensive cudaSetDevice at startup
+  // gives the plugin a valid primary context even if it was loaded by a
+  // user thread bound to a different device.
+  int cudaDev;
+  volatile uint32_t* abortFlag;
+  // True while the thread is iterating `active` outside the mutex and may
+  // be calling into the plugin. ncclProfilerThreadDestroy waits this out
+  // before tearing down per-comm state.
+  bool iterationActive;
+  // Posters append to pending under mutex; thread splices it into active.
+  struct ncclProfilerWorkOp* pending;
+  struct ncclProfilerWorkOp* pendingTail;
+  struct ncclProfilerWorkOp* active;
+  struct ncclProfilerWorkOp* activeTail;
+  struct ncclMemoryStack opStack;
+  struct ncclMemoryPool opPool;
+
+  // Backpressure observability, all under mutex.
+  size_t inflight;
+  size_t maxInflightSeen;
+  size_t maxInflight;
+  uint64_t droppedOps; // Allocation failures only; never used for soft cap.
+};
+
+enum ncclProfilerThreadAction {
+  NCCL_PROFILER_THREAD_PROGRESS,
+  NCCL_PROFILER_THREAD_STOP,
+  // Stop requested but ops are still queued; drain them so join() returns.
+  NCCL_PROFILER_THREAD_CLEANUP_AND_STOP,
+};
 
 static std::mutex profilerMutex;
 static int profilerPluginRefCount;
@@ -500,19 +547,16 @@ ncclResult_t ncclProfilerStartTaskEvents(struct ncclKernelPlan* plan) {
         ncclProfiler->startEvent(plan->comm->profilerContext, &ct->eventHandle, &eDescr);
       }
     }
-    // comm->seqNumber values are updated even if the plugin is not active, since they are used by RAS
-    // as well.
-    // The test for "persistent" is a workaround for graph-captured collectives.  In their case this
-    // function may not be
+    // comm->seqNumber values are updated even if the plugin is not active, since they are used by RAS as well.
+    // The test for "persistent" is a workaround for graph-captured collectives.  In their case this function may not be
     // consistently invoked on all the ranks, which would lead to mismatched counter values and thus false-positive
     // reports from RAS.  Instead, we choose not to include graph-captured collectives in our counts.  An exception is
     // made if ncclProfileKernelCh profiler events are active, as they result in proxy events always being added, which
     // gives the consistency.
     if (!plan->persistent ||
         (COMPILER_EXPECT(ncclProfiler != NULL, 0) && (plan->groupEventHandle || ct->collApiEventHandle) &&
-         (ct->eActivationMask & ncclProfileKernelCh))) {
+         (ct->eActivationMask & ncclProfileKernelCh)))
       COMPILER_ATOMIC_FETCH_ADD(&plan->comm->seqNumber[ct->func], 1ULL, std::memory_order_relaxed);
-    }
     ct = ct->next;
   }
   if (COMPILER_EXPECT(ncclProfiler != NULL, 0)) {
@@ -520,6 +564,11 @@ ncclResult_t ncclProfilerStartTaskEvents(struct ncclKernelPlan* plan) {
     while (pt) {
       int enable = pt->eActivationMask & (ncclProfileP2p | ncclProfileProxyOp | ncclProfileProxyStep |
                                           ncclProfileKernelCh | ncclProfileNetPlugin);
+      // Both halves of a send/recv pair carry KernelCh over their own channels
+      // (see ncclProfilerPostPlanWork). Advertise the matching per-direction
+      // count so completion-gating plugins balance their per-event refs.
+      uint8_t profNChannels = pt->nChannels;
+      if (pt->eActivationMask & ncclProfileKernelCh) profNChannels = (uint8_t)countOneBits(pt->channelMask);
       if (enable) {
         ncclProfilerEventDescr_t eDescr = {0};
         eDescr.type = ncclProfileP2p;
@@ -531,7 +580,7 @@ ncclResult_t ncclProfilerStartTaskEvents(struct ncclKernelPlan* plan) {
         eDescr.p2p.count = pt->count;
         eDescr.p2p.datatype = ncclDatatypeToString(pt->datatype);
         eDescr.p2p.peer = pt->root;
-        eDescr.p2p.nChannels = pt->nChannels;
+        eDescr.p2p.nChannels = profNChannels;
         ncclProfiler->startEvent(plan->comm->profilerContext, &pt->eventHandle, &eDescr);
       }
       pt = pt->next;
@@ -676,29 +725,27 @@ ncclResult_t ncclProfilerStopProxyCtrlEvent(void* eHandle) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclProfilerStartKernelChEvent(struct ncclProxyArgs* args, int s, uint64_t start) {
+ncclResult_t ncclProfilerStartKernelChEvent(struct ncclProfilerWorkOp* op, uint64_t start) {
   if (COMPILER_EXPECT(ncclProfiler != NULL, 0)) {
-    struct ncclProxySubArgs* sub = &args->subs[s];
-    if (sub->eActivationMask & ncclProfileKernelCh) {
+    if (op->eActivationMask & ncclProfileKernelCh) {
       ncclProfilerEventDescr_t eDescr = {};
       eDescr.type = ncclProfileKernelCh;
-      eDescr.parentObj = sub->taskEventHandle;
-      eDescr.kernelCh.channelId = sub->channelId;
+      eDescr.parentObj = op->taskEventHandle;
+      eDescr.kernelCh.channelId = op->channelId;
       eDescr.kernelCh.pTimer = start;
-      ncclProfiler->startEvent(sub->profilerContext, &sub->kernelEventHandle, &eDescr);
+      ncclProfiler->startEvent(op->profilerContext, &op->kernelEventHandle, &eDescr);
     }
   }
   return ncclSuccess;
 }
 
-ncclResult_t ncclProfilerStopKernelChEvent(struct ncclProxyArgs* args, int s, uint64_t stop) {
+ncclResult_t ncclProfilerStopKernelChEvent(struct ncclProfilerWorkOp* op, uint64_t stop) {
   if (COMPILER_EXPECT(ncclProfiler != NULL, 0)) {
-    struct ncclProxySubArgs* sub = &args->subs[s];
-    if (sub->kernelEventHandle) {
+    if (op->kernelEventHandle) {
       ncclProfilerEventStateArgs_t a = {};
       a.kernelCh.pTimer = stop;
-      ncclProfiler->recordEventState(sub->kernelEventHandle, ncclProfilerKernelChStop, &a);
-      ncclProfiler->stopEvent(sub->kernelEventHandle);
+      ncclProfiler->recordEventState(op->kernelEventHandle, ncclProfilerKernelChStop, &a);
+      ncclProfiler->stopEvent(op->kernelEventHandle);
     }
   }
   return ncclSuccess;
@@ -748,31 +795,382 @@ ncclResult_t ncclProfilerAddPidToProxyOp(struct ncclProxyOp* op) {
   return ncclSuccess;
 }
 
-static std::mutex proxyProfilerConnectMutex;
-
-static ncclResult_t proxyProfilerConnect(struct ncclComm* comm, struct ncclProxyOp* op) {
-  ncclResult_t ret = ncclSuccess;
-  std::lock_guard<std::mutex> lock(proxyProfilerConnectMutex);
-  if (comm->profiler.initialized) goto exit;
-  for (int c = 0; c < MAXCHANNELS; c++) {
-    NCCLCHECKGOTO(ncclProxyConnect(comm, TRANSPORT_PROFILER, 0, comm->rank, &comm->profiler.sendProxyConn[c]), ret,
-                  exit);
-    NCCLCHECKGOTO(ncclProxyCallBlocking(comm, &comm->profiler.sendProxyConn[c], ncclProxyMsgConnect, NULL, 0, NULL, 0),
-                  ret, exit);
-    NCCLCHECKGOTO(ncclProxyConnect(comm, TRANSPORT_PROFILER, 0, comm->rank, &comm->profiler.recvProxyConn[c]), ret,
-                  exit);
-    NCCLCHECKGOTO(ncclProxyCallBlocking(comm, &comm->profiler.recvProxyConn[c], ncclProxyMsgConnect, NULL, 0, NULL, 0),
-                  ret, exit);
-  }
-  comm->profiler.initialized = true;
-exit:
-  return ret;
+// Caller must hold pt->mutex.
+static struct ncclProfilerWorkOp* profilerAllocOp(struct ncclProfilerThread* pt) {
+  return ncclMemoryPoolAlloc<struct ncclProfilerWorkOp>(&pt->opPool, &pt->opStack);
 }
 
-bool ncclProfilerNeedsProxy(struct ncclComm* comm, struct ncclProxyOp* op) {
-  bool enabled = ncclProfilerPluginLoaded() && (op->eActivationMask & ncclProfileKernelCh);
-  if (enabled && !comm->profiler.initialized) (void)proxyProfilerConnect(comm, op);
-  return enabled;
+// Caller must hold pt->mutex.
+static void profilerRecycleList(struct ncclProfilerThread* pt, struct ncclProfilerWorkOp* head) {
+  while (head) {
+    struct ncclProfilerWorkOp* next = head->next;
+    ncclMemoryPoolFree(&pt->opPool, head);
+    if (pt->inflight > 0) pt->inflight--;
+    head = next;
+  }
+}
+
+// Runs without pt->mutex held: plugin callbacks may block, so we mustn't
+// stall posters. Completed ops are returned as a local list and recycled by
+// the caller under lock; *outNewTail receives the new tail of pt->active.
+//
+// Concurrency: caller sets pt->iterationActive=true under mutex before
+// invoking this; ncclProfilerThreadDestroy waits on condIterationInactive
+// until cleanupAndStop clears it. That ordering keeps a comm's
+// profilerContext alive across the plugin callbacks below.
+static struct ncclProfilerWorkOp* profilerProgressOps(struct ncclProfilerThread* pt,
+                                                      struct ncclProfilerWorkOp** outNewTail) {
+  struct ncclProfilerWorkOp* recycled = nullptr;
+  struct ncclProfilerWorkOp* prev = nullptr;
+  struct ncclProfilerWorkOp* op = pt->active;
+  while (op) {
+    struct ncclProfilerWorkOp* next = op->next;
+    int ch = op->channelId;
+    uint64_t wc = op->workCounter;
+    int slot = wc % MAX_PROFILER_EVENTS_PER_CHANNEL;
+
+    // Use `<=` not `==`: the device wraps around MAX_PROFILER_EVENTS_PER_CHANNEL
+    // slots, so if the host falls behind the kernel may already have overwritten
+    // this slot with a counter > wc (matches the old proxy progress check).
+    if (!op->started && wc <= op->workStarted[ch].data[slot].counter) {
+      ncclProfilerStartKernelChEvent(op, op->workStarted[ch].data[slot].timestamp);
+      op->started = true;
+    }
+    if (op->started && !op->completed && wc <= op->workCompleted[ch].data[slot].counter) {
+      ncclProfilerStopKernelChEvent(op, op->workCompleted[ch].data[slot].timestamp);
+      op->completed = true;
+    }
+    if (op->completed) {
+      if (prev) prev->next = next;
+      else pt->active = next;
+      op->next = recycled;
+      recycled = op;
+    } else {
+      prev = op;
+    }
+    op = next;
+  }
+  *outNewTail = prev;
+  return recycled;
+}
+
+// Caller must hold pt->mutex. O(1) splice via pt->activeTail.
+static inline void appendWorkToActiveQueue(struct ncclProfilerThread* pt) {
+  if (pt->pending == nullptr) return;
+  if (pt->activeTail) {
+    pt->activeTail->next = pt->pending;
+  } else {
+    pt->active = pt->pending;
+  }
+  pt->activeTail = pt->pendingTail;
+  pt->pending = nullptr;
+  pt->pendingTail = nullptr;
+}
+
+// Block until there is work or a stop/abort request. On exit, pending has
+// been folded into active and pt->iterationActive is set to true (paired
+// with cleanupAndStop) when the returned action is PROGRESS/CLEANUP_AND_STOP.
+static inline ncclProfilerThreadAction waitForAction(struct ncclProfilerThread* pt, bool* outStop) {
+  std::unique_lock<std::mutex> lock(pt->mutex);
+  bool aborted = pt->abortFlag && COMPILER_ATOMIC_LOAD(pt->abortFlag, std::memory_order_relaxed);
+  while (pt->pending == nullptr && pt->active == nullptr && !pt->stop && !aborted) {
+    pt->cond.wait(lock);
+    aborted = pt->abortFlag && COMPILER_ATOMIC_LOAD(pt->abortFlag, std::memory_order_relaxed);
+  }
+  bool stop = pt->stop;
+  *outStop = stop;
+  appendWorkToActiveQueue(pt);
+  if ((stop || aborted) && pt->active == nullptr) return NCCL_PROFILER_THREAD_STOP;
+  pt->iterationActive = true;
+  if ((stop || aborted) && pt->active != nullptr) return NCCL_PROFILER_THREAD_CLEANUP_AND_STOP;
+  return NCCL_PROFILER_THREAD_PROGRESS;
+}
+
+// Recycle completed ops, publish new active tail, and (when stopping)
+// drain ops whose kernels will never run. Clears iterationActive so
+// ncclProfilerThreadDestroy can proceed. Returns true to exit the thread.
+static inline bool cleanupAndStop(struct ncclProfilerThread* pt, struct ncclProfilerWorkOp* recycled,
+                                  struct ncclProfilerWorkOp* newActiveTail, bool drainStuck) {
+  std::lock_guard<std::mutex> lock(pt->mutex);
+  profilerRecycleList(pt, recycled);
+  pt->activeTail = newActiveTail;
+  if (drainStuck) {
+    struct ncclProfilerWorkOp* stuck = pt->active;
+    pt->active = nullptr;
+    pt->activeTail = nullptr;
+    profilerRecycleList(pt, stuck);
+  }
+  pt->iterationActive = false;
+  pt->condIterationInactive.notify_all();
+  return pt->active == nullptr;
+}
+
+// Keep KernelCh lag bounded: reset after any completed op and only back off
+// briefly when the active head has not completed yet.
+static inline unsigned updateProgressInterval(struct ncclProfilerThread* pt, unsigned spinUs, bool madeProgress) {
+  if (pt->active == nullptr || madeProgress) return 1;
+  return spinUs < 10 ? spinUs * 2 : 10;
+}
+
+static void* ncclProfilerThreadFunc(void* arg) {
+  struct ncclProfilerThread* pt = (struct ncclProfilerThread*)arg;
+
+  // The thread only reads host-pinned memory, but plugins it dispatches
+  // into may make context-dependent driver calls; bind defensively.
+  cudaError_t setDevErr = cudaSetDevice(pt->cudaDev);
+  if (setDevErr != cudaSuccess) {
+    INFO(NCCL_INIT | NCCL_PROFILE,
+         "[Profiler Thread] cudaSetDevice(%d) failed: %s; continuing without explicit device binding", pt->cudaDev,
+         cudaGetErrorString(setDevErr));
+    (void)cudaGetLastError();
+  }
+  INFO(NCCL_INIT, "[Profiler Thread] started (cudaDev=%d, maxInflight=%zu)", pt->cudaDev, pt->maxInflight);
+
+  unsigned spinUs = 1;
+  while (true) {
+    bool stop;
+    ncclProfilerThreadAction action = waitForAction(pt, &stop);
+    if (action == NCCL_PROFILER_THREAD_STOP) break;
+
+    struct ncclProfilerWorkOp* newActiveTail = nullptr;
+    struct ncclProfilerWorkOp* recycled = profilerProgressOps(pt, &newActiveTail);
+    bool madeProgress = (recycled != nullptr);
+
+    bool drainStuck = (action == NCCL_PROFILER_THREAD_CLEANUP_AND_STOP);
+    bool exitNow = cleanupAndStop(pt, recycled, newActiveTail, drainStuck);
+    if (stop && exitNow) break;
+
+    if (pt->active && !madeProgress) {
+      std::this_thread::sleep_for(std::chrono::microseconds(spinUs));
+    }
+    spinUs = updateProgressInterval(pt, spinUs, madeProgress);
+  }
+
+  size_t hwm;
+  uint64_t drops;
+  {
+    std::lock_guard<std::mutex> lock(pt->mutex);
+    hwm = pt->maxInflightSeen;
+    drops = pt->droppedOps;
+  }
+  if (drops != 0 || hwm != 0) {
+    INFO(NCCL_INIT | NCCL_PROFILE, "[Profiler Thread] exiting: maxInflightSeen=%zu, droppedOps=%lu, cap=%zu", hwm,
+         (unsigned long)drops, pt->maxInflight);
+  }
+  return nullptr;
+}
+
+ncclResult_t ncclProfilerThreadCreate(struct ncclComm* comm, struct ncclComm* parent) {
+  if (!ncclProfilerPluginLoaded()) return ncclSuccess;
+  if (parent && parent->shareResources && parent->profiler.profilerThread) {
+    comm->profiler.profilerThread = parent->profiler.profilerThread;
+    std::lock_guard<std::mutex> lock(comm->profiler.profilerThread->mutex);
+    comm->profiler.profilerThread->refCount++;
+    return ncclSuccess;
+  }
+
+  struct ncclProfilerThread* pt = new ncclProfilerThread{};
+  pt->stop = 0;
+  pt->refCount = 1;
+  pt->cudaDev = comm->cudaDev;
+  pt->abortFlag = comm->abortFlag;
+  pt->iterationActive = false;
+  pt->pending = nullptr;
+  pt->pendingTail = nullptr;
+  pt->active = nullptr;
+  pt->activeTail = nullptr;
+  pt->inflight = 0;
+  pt->maxInflightSeen = 0;
+  pt->droppedOps = 0;
+  pt->maxInflight = NCCL_PROFILER_DEFAULT_MAX_INFLIGHT;
+  ncclMemoryStackConstruct(&pt->opStack);
+  ncclMemoryPoolConstruct(&pt->opPool);
+  pt->thread = std::thread(ncclProfilerThreadFunc, pt);
+  comm->profiler.profilerThread = pt;
+  return ncclSuccess;
+}
+
+// Splice out and recycle every op referencing `ctx`; returns new list tail.
+// Caller must hold mutex.
+static struct ncclProfilerWorkOp* profilerPurgeByContext(struct ncclProfilerThread* pt,
+                                                         struct ncclProfilerWorkOp** list, void* ctx) {
+  struct ncclProfilerWorkOp* lastKept = nullptr;
+  struct ncclProfilerWorkOp** link = list;
+  while (*link) {
+    if ((*link)->profilerContext == ctx) {
+      struct ncclProfilerWorkOp* dead = *link;
+      *link = dead->next;
+      ncclMemoryPoolFree(&pt->opPool, dead);
+      if (pt->inflight > 0) pt->inflight--;
+    } else {
+      lastKept = *link;
+      link = &(*link)->next;
+    }
+  }
+  return lastKept;
+}
+
+ncclResult_t ncclProfilerThreadDestroy(struct ncclComm* comm) {
+  struct ncclProfilerThread* pt = comm->profiler.profilerThread;
+  if (pt == nullptr) return ncclSuccess;
+  bool shouldJoin = false;
+  {
+    std::unique_lock<std::mutex> lock(pt->mutex);
+    // Wait out any in-flight progressOps before touching the queues:
+    // ncclProfilerPluginFinalize destroys this comm's profilerContext right
+    // after we return, and the thread may be mid-callback against it.
+    while (pt->iterationActive) pt->condIterationInactive.wait(lock);
+
+    pt->pendingTail = profilerPurgeByContext(pt, &pt->pending, comm->profilerContext);
+    pt->activeTail = profilerPurgeByContext(pt, &pt->active, comm->profilerContext);
+
+    pt->refCount--;
+    if (pt->refCount == 0) {
+      pt->stop = 1;
+      shouldJoin = true;
+    }
+    pt->cond.notify_one();
+  }
+  if (shouldJoin) {
+    if (pt->thread.joinable()) pt->thread.join();
+    // opStack owns opPool's backing storage; destructing it frees both.
+    ncclMemoryStackDestruct(&pt->opStack);
+    delete pt;
+  }
+  comm->profiler.profilerThread = nullptr;
+  return ncclSuccess;
+}
+
+// Enqueue one KernelCh op for (channelId, wc) against taskEventHandle. Does NOT
+// advance workCounter: the caller owns the per-channel bump so both halves of a
+// send/recv pair (which the device counts as one fused work per channel) can
+// post against the same device slot.
+static void profilerEnqueueOp(struct ncclProfilerThread* pt, struct ncclComm* comm, int channelId, uint64_t wc,
+                              int eActivationMask, void* taskEventHandle) {
+  bool dropped = false;
+  uint64_t dropTotal = 0;
+  size_t inflightAtDrop = 0;
+  size_t maxInflightCap = 0;
+  {
+    std::lock_guard<std::mutex> lock(pt->mutex);
+    struct ncclProfilerWorkOp* op = nullptr;
+    op = profilerAllocOp(pt);
+    if (op == nullptr) {
+      pt->droppedOps++;
+      dropped = true;
+      dropTotal = pt->droppedOps;
+      inflightAtDrop = pt->inflight;
+      maxInflightCap = pt->maxInflight;
+    } else {
+      op->channelId = channelId;
+      op->workCounter = wc;
+      op->eActivationMask = eActivationMask;
+      op->taskEventHandle = taskEventHandle;
+      op->profilerContext = comm->profilerContext;
+      op->workStarted = comm->profiler.workStarted;
+      op->workCompleted = comm->profiler.workCompleted;
+      op->kernelEventHandle = nullptr;
+      op->started = false;
+      op->completed = false;
+      op->next = nullptr;
+
+      if (pt->pendingTail) {
+        pt->pendingTail->next = op;
+      } else {
+        pt->pending = op;
+      }
+      pt->pendingTail = op;
+      pt->inflight++;
+      if (pt->inflight > pt->maxInflightSeen) pt->maxInflightSeen = pt->inflight;
+      if (pt->inflight > pt->maxInflight && (pt->inflight & (pt->inflight - 1)) == 0) {
+        INFO(NCCL_PROFILE,
+             "Profiler: KernelCh inflight ops exceeded soft cap "
+             "(inflight=%zu, cap=%zu). Check that the profiler plugin is draining events.",
+             pt->inflight, pt->maxInflight);
+      }
+      pt->cond.notify_one();
+    }
+  }
+
+  if (!dropped) return;
+
+  // INFO on a power-of-two ramp so logs surface allocation failure without spam.
+  if ((dropTotal & (dropTotal - 1)) == 0) {
+    INFO(NCCL_PROFILE,
+         "Profiler: dropping KernelCh op after allocation failure "
+         "(dropped=%lu, inflight=%zu, softCap=%zu).",
+         (unsigned long)dropTotal, inflightAtDrop, maxInflightCap);
+  }
+}
+
+// Invoked from the captured hostStreamPlanCallback. Must:
+//   * Always return ncclSuccess (errors on this path poison the captured
+//     stream and desync the host workCounter from the kernel).
+//   * Bump comm->profiler.workCounter[channelId] exactly once per call,
+//     even on allocation failure, to stay in lock-step with the device kernel.
+static ncclResult_t profilerPostWorkInternal(struct ncclComm* comm, int channelId, int eActivationMask,
+                                             void* taskEventHandle) {
+  struct ncclProfilerThread* pt = comm->profiler.profilerThread;
+  if (pt == nullptr || !(eActivationMask & ncclProfileKernelCh)) return ncclSuccess;
+  uint64_t wc = ++comm->profiler.workCounter[channelId];
+  profilerEnqueueOp(pt, comm, channelId, wc, eActivationMask, taskEventHandle);
+  return ncclSuccess;
+}
+
+// Posts must mirror the device kernel's per-channel workCounter advance
+// exactly (`ncclShmem.channel.workCounter += ncclShmem.nWorks` in
+// src/device/common.h::profiler). Per-task mapping:
+//   * Coll: one bump per channel in [channelLo, channelHi].
+//   * P2p:  one bump per channel in channelMask per addP2pToPlan() pair;
+//           sibling tasks of a pair must not double-post. Multiple pairs
+//           that overlap a channel each contribute one bump.
+//   * Bcast/RMA/CE/sym-coll: piggyback or no KernelCh.
+// Drift breaks the slot-counter invariant in profilerProgressOps, leaks
+// ops into pt->active, and (eventually) corrupts unrelated CUDA driver
+// state by exhausting the op pool. Return value is discarded by callers.
+ncclResult_t ncclProfilerPostPlanWork(struct ncclComm* comm, struct ncclKernelPlan* plan) {
+  if (!ncclProfilerPluginLoaded() || !comm->profiler.profilerThread) return ncclSuccess;
+
+  struct ncclTaskColl* ct = ncclIntruQueueHead(&plan->collTaskQueue);
+  while (ct) {
+    if (ct->eActivationMask & ncclProfileKernelCh) {
+      for (int c = ct->channelLo; c <= ct->channelHi; c++) {
+        (void)profilerPostWorkInternal(comm, c, ct->eActivationMask, ct->eventHandle);
+      }
+    }
+    ct = ct->next;
+  }
+
+  // Both halves of a send/recv pair carry KernelCh over their own channels, as
+  // before the thread decouple. The device counts the fused p2p work once per
+  // channel, so the pair shares a single workCounter bump per channel and both
+  // halves' ops read the same device slot. Siblings are enqueued back-to-back
+  // (see scheduleP2pTasksToPlan) and share p2pPairId; PID 0 is the unassigned
+  // sentinel, treated as a single-task pair.
+  struct ncclProfilerThread* thr = comm->profiler.profilerThread;
+  struct ncclTaskP2p* p2pt = ncclIntruQueueHead(&plan->p2pTaskQueue);
+  uint16_t lastPid = 0;
+  while (p2pt) {
+    uint16_t pid = p2pt->p2pPairId;
+    bool isFirstOfPair = (pid == 0) || (pid != lastPid);
+    lastPid = pid;
+    if (isFirstOfPair) {
+      struct ncclTaskP2p* t0 = p2pt;
+      struct ncclTaskP2p* t1 = (pid != 0 && p2pt->next && p2pt->next->p2pPairId == pid) ? p2pt->next : nullptr;
+      uint64_t m0 = (t0->eActivationMask & ncclProfileKernelCh) ? t0->channelMask : 0;
+      uint64_t m1 = (t1 && (t1->eActivationMask & ncclProfileKernelCh)) ? t1->channelMask : 0;
+      for (int c = 0; c < MAXCHANNELS; c++) {
+        uint64_t bit = 1ull << c;
+        if (!((m0 | m1) & bit)) continue;
+        uint64_t wc = ++comm->profiler.workCounter[c];
+        if (m0 & bit) profilerEnqueueOp(thr, comm, c, wc, t0->eActivationMask, t0->eventHandle);
+        if (m1 & bit) profilerEnqueueOp(thr, comm, c, wc, t1->eActivationMask, t1->eventHandle);
+      }
+    }
+    p2pt = p2pt->next;
+  }
+
+  return ncclSuccess;
 }
 
 bool ncclProfilerPluginLoaded(void) {
@@ -781,8 +1179,7 @@ bool ncclProfilerPluginLoaded(void) {
 
 ncclResult_t ncclProfilerCallback(void** eHandle, int type, void* pHandle, int64_t pluginId, void* extData) {
   if (COMPILER_EXPECT(ncclProfiler != NULL, 0)) {
-    if (type == ncclProfilerNetEventStart) {
-      // start
+    if (type == ncclProfilerNetEventStart) { // start
       struct ncclProxyEventHandle* p = (struct ncclProxyEventHandle*)pHandle;
       struct ncclProxySubArgs* sub = p->subArgPtr;
       if (sub->eActivationMask & ncclProfileNetPlugin) {
@@ -794,16 +1191,13 @@ ncclResult_t ncclProfilerCallback(void** eHandle, int type, void* pHandle, int64
         eDescr.netPlugin.data = extData;
         ncclProfiler->startEvent(sub->profilerContext, eHandle, &eDescr);
       }
-    } else if (type == ncclProfilerNetEventStop) {
-      // stop
+    } else if (type == ncclProfilerNetEventStop) { // stop
       ncclProfiler->stopEvent(*eHandle);
-    } else if (type == ncclProfilerNetEventUpdate) {
-      // update
+    } else if (type == ncclProfilerNetEventUpdate) { // update
       ncclProfilerEventStateArgs_t args = {};
       args.netPlugin.data = extData;
       ncclProfiler->recordEventState(*eHandle, ncclProfilerNetPluginUpdate, &args);
-    } else {
-      // update and stop
+    } else { // update and stop
       ncclProfilerEventStateArgs_t args = {};
       args.netPlugin.data = extData;
       ncclProfiler->recordEventState(*eHandle, ncclProfilerNetPluginUpdate, &args);

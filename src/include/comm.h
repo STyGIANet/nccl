@@ -233,6 +233,9 @@ struct ncclTaskColl {
   void* collApiEventHandle;
   void* eventHandle;
   uint8_t nChannels;
+  // Inclusive channel range this task ran on; mirrors devWork->channelLo/Hi.
+  uint8_t channelLo;
+  uint8_t channelHi;
 };
 
 struct ncclTaskBcast {
@@ -273,6 +276,11 @@ struct ncclTaskP2p {
   void* p2pApiEventHandle;
   void* eventHandle;
   uint8_t nChannels;
+  // Per-direction channels used by this task; read by the profiler to emit and
+  // advertise KernelCh per direction (StartTaskEvents / PostPlanWork).
+  uint64_t channelMask;
+  // Shared by both tasks of an addP2pToPlan() pair; 0 = unassigned.
+  uint16_t p2pPairId;
 };
 
 struct ncclTaskRma {
@@ -331,6 +339,10 @@ struct ncclKernelPlan {
   size_t kernelArgsSize;
   uint64_t channelMask; // bitset of which channels are present
   bool hasProxyOps; // does any channel have a non-empty proxyOpQueue
+  // Any task with ncclProfileKernelCh; gates the captured host callback.
+  bool hasProfilerOps;
+  // Source of ncclTaskP2p::p2pPairId; incremented per addP2pToPlan() call.
+  uint16_t p2pPairCounter;
   int threadPerBlock;
 
   int collOpCount; // Number of collectives in this plan.
@@ -752,7 +764,7 @@ struct ncclComm {
   // Profiler plugin
   void* profilerContext;
   uint64_t seqNumber[NCCL_NUM_FUNCTIONS];
-  struct ncclProfilerProxy profiler;
+  struct ncclProfilerCommState profiler;
 
   // RMA state
   struct ncclRmaState rmaState;

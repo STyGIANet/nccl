@@ -258,6 +258,22 @@ static void finishPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
     if (op) plan->hasProxyOps = true;
     if (op) channelUbound = c + 1;
   }
+
+  // hasProfilerOps gates the captured host callback for KernelCh-only plans.
+  for (struct ncclTaskColl* ct = ncclIntruQueueHead(&plan->collTaskQueue); ct != nullptr; ct = ct->next) {
+    if (ct->eActivationMask & ncclProfileKernelCh) {
+      plan->hasProfilerOps = true;
+      break;
+    }
+  }
+  if (!plan->hasProfilerOps) {
+    for (struct ncclTaskP2p* pt = ncclIntruQueueHead(&plan->p2pTaskQueue); pt != nullptr; pt = pt->next) {
+      if (pt->eActivationMask & ncclProfileKernelCh) {
+        plan->hasProfilerOps = true;
+        break;
+      }
+    }
+  }
   // Phase 2: Dequeue from planner->channels[c], enqueue in merged order to plan
   while (nHeads != 0) {
     int c = -1;
@@ -564,15 +580,6 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
   return ncclSuccess;
 }
 
-static ncclResult_t addProfilerProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelPlan* plan,
-                                               struct ncclProxyOp* op) {
-  int tmp = op->pattern;
-  op->pattern = ncclPatternProfiler;
-  ncclResult_t ret = ncclAddProxyOpIfNeeded(comm, plan, op);
-  op->pattern = tmp;
-  return ret;
-}
-
 static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan,
                                             struct ncclKernelPlanBudget* budget) {
   struct ncclKernelPlanner* planner = &comm->planner;
@@ -635,6 +642,9 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
                                  &proxyOp));
       devWork->channelLo = 0;
       devWork->channelHi = nChannels - 1;
+      task->channelLo = 0;
+      task->channelHi = (uint8_t)(nChannels - 1);
+      task->nChannels = (uint8_t)nChannels;
       devWork->collnet.count = task->count;
       devWork->collnet.chunkCount = chunkSize / ncclTypeSize(task->datatype);
       devWork->direct = directFlags;
@@ -646,11 +656,8 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
         proxyOp.task.coll = task;
         proxyOp.rank = comm->rank;
         proxyOp.eActivationMask = task->eActivationMask;
-        proxyOp.incWorkCounter = true;
         ncclAddWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
-        // Set pattern to profiler to add a proxy profiler for kernel events
         NCCLCHECK(ncclAddProxyOpIfNeeded(comm, plan, &proxyOp));
-        NCCLCHECK(addProfilerProxyOpIfNeeded(comm, plan, &proxyOp));
       }
     } else {
       // not task->isCollnet
@@ -710,6 +717,8 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
 
       devWork->channelLo = channelId;
       devWork->channelHi = channelId + nChannels - 1;
+      task->channelLo = (uint8_t)channelId;
+      task->channelHi = (uint8_t)(channelId + nChannels - 1);
       devWork->cbd.countLo = countLo;
       devWork->cbd.countMid = countMid;
       devWork->cbd.countHi = countHi;
@@ -798,14 +807,12 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
           proxyOp->ringAlgo->incRefCount();
         }
         proxyOp->eActivationMask = task->eActivationMask;
-        proxyOp->incWorkCounter = true;
         proxyOp->nChannels = nChannels;
         ncclAddWorkBatchToPlan(comm, plan, c, workNode->workType, task->devFuncId, plan->workBytes);
         // Coverity reports "proxyOp->connection" as being possibly uninitialized.  It's hard to
         // determine if that's actually true but it's also not clear if that would be an issue.
         // coverity[uninit_use_in_call:FALSE]
         NCCLCHECK(ncclAddProxyOpIfNeeded(comm, plan, proxyOp));
-        NCCLCHECK(addProfilerProxyOpIfNeeded(comm, plan, proxyOp));
       }
     }
 
@@ -877,6 +884,7 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
   bool network[2] = {false, false};
   bool proxySameProcess[2] = {true, true};
   void** handles[2] = {NULL, NULL};
+  uint64_t p2pDirChannelMask[2] = {0, 0}; // per-direction channels (idx 0 recv, 1 send)
   uint8_t base = ncclP2pChannelBaseForRound(comm, p2pRound);
   struct ncclProxyOp proxyOps[2] = {};
   int nProxyOps = selfSend ? 0 : 2;
@@ -1055,10 +1063,17 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
   maxConcurrent = comm->p2pnChannels / nChannelsMax * NCCL_MAX_DEV_WORK_P2P_PER_BATCH;
   concurrentTasks[0] = std::min(planTotalTasks[0], maxConcurrent);
   concurrentTasks[1] = std::min(planTotalTasks[1], maxConcurrent);
+  ++plan->p2pPairCounter;
+  for (int i = 0; i < 2; i++) {
+    if (p2pTasks[i]) p2pTasks[i]->p2pPairId = plan->p2pPairCounter;
+  }
   for (int part = 0; part < nChannelsMax; part++) {
-    int incWorkCounter = -1;
     int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, part);
     plan->channelMask |= uint64_t(1) << channelId;
+    // Each direction uses its first nChannels[dir] parts; track per-direction
+    // channels so the profiler emits KernelCh per direction (see profiler.cc).
+    for (int i = 0; i < 2; i++)
+      if (part < nChannels[i]) p2pDirChannelMask[i] |= uint64_t(1) << channelId;
     // Add batch first.
     ncclAddWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, ncclDevFuncId_P2p(), workOffset, p2pEpoch,
                            p2pRound);
@@ -1093,12 +1108,6 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
         }
       }
 
-      // Increment work counter for <send, recv> pair rather than individual p2p
-      if (proxyOps[dir].nsteps && incWorkCounter < 0) {
-        proxyOps[dir].incWorkCounter = true;
-        incWorkCounter = dir;
-      }
-
       if (proxyOps[dir].nsteps != 0) {
         // Calculate the opCount after adding batch since then the batch count will
         // equal one plus the batch index this p2p settled in.
@@ -1107,9 +1116,11 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
         proxyOps[dir].nChannels = nChannels[dir];
         proxyOps[dir].nPeers = concurrentTasks[dir];
         NCCLCHECKGOTO(ncclAddProxyOpIfNeeded(comm, plan, &proxyOps[dir]), ret, cleanup);
-        NCCLCHECKGOTO(addProfilerProxyOpIfNeeded(comm, plan, &proxyOps[dir]), ret, cleanup);
       }
     }
+  }
+  for (int i = 0; i < 2; i++) {
+    if (p2pTasks[i]) p2pTasks[i]->channelMask = p2pDirChannelMask[i];
   }
 cleanup:
   free(handles[0]);
@@ -1436,6 +1447,7 @@ static ncclResult_t uploadProxyOps(struct ncclComm* comm, struct ncclKernelPlan*
 static ncclResult_t hostStreamPlanTask(struct ncclComm* comm, struct ncclKernelPlan* plan) {
   NCCLCHECK(ncclProfilerStartGroupEvent(plan));
   NCCLCHECK(ncclProfilerStartTaskEvents(plan));
+  NCCLCHECK(ncclProfilerPostPlanWork(comm, plan));
   if (ncclIntruQueueHead(&plan->proxyOpQueue)) {
     NCCLCHECK(uploadProxyOps(comm, plan));
     NCCLCHECK(ncclProxyStart(comm));
@@ -1706,7 +1718,8 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       bool acquired = false;
       cudaStream_t hostStream;
       for (struct ncclKernelPlan* plan = planHead; plan != nullptr; plan = plan->next) {
-        if (plan->hasProxyOps) {
+        // hasProfilerOps: pure NVL/SHM plans still need the host callback per replay.
+        if (plan->hasProxyOps || plan->hasProfilerOps) {
           if (!acquired) {
             acquired = true;
             NCCLCHECKGOTO(ncclStrongStreamAcquire(planner->capturingGraph, &comm->sharedRes->hostStream,
@@ -2314,7 +2327,6 @@ static ncclResult_t calcCollChunking(struct ncclComm* comm, struct ncclTaskColl*
   case ncclPatternCollnetChain:
   case ncclPatternCollnetDirect:
   case ncclPatternNvls:
-  case ncclPatternProfiler:
     // Peer count hints unused
     break;
   case ncclPatternSend:

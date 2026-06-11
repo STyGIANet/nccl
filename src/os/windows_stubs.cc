@@ -398,16 +398,14 @@ ncclResult_t ncclProfilerStopProxyCtrlEvent(void* eHandle) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclProfilerStartKernelChEvent(struct ncclProxyArgs* args, int s, uint64_t start) {
-  (void)args;
-  (void)s;
+ncclResult_t ncclProfilerStartKernelChEvent(struct ncclProfilerWorkOp* op, uint64_t start) {
+  (void)op;
   (void)start;
   return ncclSuccess;
 }
 
-ncclResult_t ncclProfilerStopKernelChEvent(struct ncclProxyArgs* args, int s, uint64_t stop) {
-  (void)args;
-  (void)s;
+ncclResult_t ncclProfilerStopKernelChEvent(struct ncclProfilerWorkOp* op, uint64_t stop) {
+  (void)op;
   (void)stop;
   return ncclSuccess;
 }
@@ -435,10 +433,21 @@ ncclResult_t ncclProfilerRecordProxyCtrlEventState(void* eHandle, int appended, 
   return ncclSuccess;
 }
 
-bool ncclProfilerNeedsProxy(struct ncclComm* comm, struct ncclProxyOp* op) {
+ncclResult_t ncclProfilerThreadCreate(struct ncclComm* comm, struct ncclComm* parent) {
   (void)comm;
-  (void)op;
-  return false;
+  (void)parent;
+  return ncclSuccess;
+}
+
+ncclResult_t ncclProfilerThreadDestroy(struct ncclComm* comm) {
+  (void)comm;
+  return ncclSuccess;
+}
+
+ncclResult_t ncclProfilerPostPlanWork(struct ncclComm* comm, struct ncclKernelPlan* plan) {
+  (void)comm;
+  (void)plan;
+  return ncclSuccess;
 }
 
 /* CE profiler stubs (ncclCeCollArgs / ncclCeBatchOpsParams forward-declared in profiler.h) */
