@@ -174,7 +174,7 @@ static ncclResult_t ncclTuningSelectBestTuning(struct ncclTuningResultList_t* tu
 ncclResult_t ncclTuningCompute(struct ncclTuningInput_t* const input, struct ncclTuningResult_t* const result) {
   ncclResult_t ret = ncclSuccess;
   INFO(NCCL_TUNING,
-       "Input: { .comm = %p, .tuningMask = %lb, .func = %s, .redOp = %d, .devRedop = %d, .dataType = %d, .nBytes = "
+       "Input: { .comm = %p, .tuningMask = 0x%lx, .func = %s, .redOp = %d, .devRedop = %d, .dataType = %d, .nBytes = "
        "%lu, .numPipesOps = %d, .count = %lu, .countMax = %lu, .nWorks = %d, .winRegType = %d, .regBuff = %d }",
        input->comm, input->tuningMask, ncclFuncToString(input->func), input->redOp, input->devRedOp, input->datatype,
        input->nBytes, input->numPipeOps, input->count, input->countMax, input->nWorks, input->winRegType,
