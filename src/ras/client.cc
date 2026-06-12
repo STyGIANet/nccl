@@ -23,6 +23,18 @@
 // Local timeout increment compared to the '-t' argument, in seconds.
 #define TIMEOUT_INCREMENT 1
 
+static void timevalAddSeconds(struct timeval* tv, double seconds) {
+  if (seconds <= 0.0)
+    return;
+  const int64_t usec = (int64_t)(seconds * 1e6);
+  tv->tv_usec += (suseconds_t)(usec % 1000000);
+  tv->tv_sec += (time_t)(usec / 1000000);
+  if (tv->tv_usec >= 1000000) {
+    tv->tv_sec += tv->tv_usec / 1000000;
+    tv->tv_usec %= 1000000;
+  }
+}
+
 static const char* hostName = "localhost";
 static const char* port = STR(NCCL_RAS_CLIENT_PORT);
 static int timeout = -1;
@@ -48,7 +60,8 @@ static void printUsage(const char* argv0) {
           "                      (" STR(NCCL_RAS_CLIENT_PORT) " by default)\n"
           "  -t, --timeout=SECS  Maximum time for the local NCCL process to wait for\n"
           "                      responses from other NCCL processes\n"
-          "                      (" STR(RAS_COLLECTIVE_LEG_TIMEOUT_SEC) " secs by default; 0 disables the timeout)\n"
+          "                      (" STR(RAS_COLLECTIVE_LEG_TIMEOUT_SEC) " secs by default, scaled by\n"
+          "                      NCCL_RAS_TIMEOUT_FACTOR; 0 disables the timeout)\n"
           "  -v, --verbose       Increase the verbosity level of the RAS output\n"
           "      --help          Print this help and exit\n"
           "      --version       Print the version number and exit\n", argv0);
@@ -279,7 +292,9 @@ retry:
   }
   if (timeout) {
     // Increase the socket timeout to accommodate NCCL timeout.
-    tv.tv_sec += (timeout > 0 ? timeout : RAS_COLLECTIVE_LEG_TIMEOUT_SEC) + RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC;
+    const double legTimeout = (timeout > 0 ? timeout
+                                           : rasTimeoutFactorSec(RAS_COLLECTIVE_LEG_TIMEOUT_SEC));
+    timevalAddSeconds(&tv, legTimeout + rasTimeoutFactorSec(RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC));
 #if defined(NCCL_OS_LINUX)
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
 #elif defined(NCCL_OS_WINDOWS)

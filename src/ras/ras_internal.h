@@ -8,6 +8,8 @@
 #ifndef NCCL_RAS_INTERNAL_H_
 #define NCCL_RAS_INTERNAL_H_
 
+#include "ras_param.h"
+
 #define NCCL_RAS_CLIENT_PORT 28028
 #define NCCL_RAS_CLIENT_PROTOCOL 2
 
@@ -197,42 +199,41 @@ static inline size_t rasMsgLength(rasMsgType type, rasCollectiveType collType = 
 #define CLOCK_UNITS_PER_SEC (1000000000LL)
 
 // Keep-alive messages are sent no sooner than a second after the last message was sent down a particular connection.
-#define RAS_KEEPALIVE_INTERVAL (1 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_KEEPALIVE_INTERVAL rasTimeoutFactorNs(1)
 
 // If no message arrives in 5 seconds via a particular connection that uses keep-alive messages, generate a warning
 // and try alternative connections.
-#define RAS_KEEPALIVE_TIMEOUT_WARN (5 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_KEEPALIVE_TIMEOUT_WARN rasTimeoutFactorNs(5)
 
 // Abort a socket that uses keep-alive messages if no message arrives in 20 seconds.
 // We will try to re-establish communication via that connection (until RAS_PEER_DEAD_TIMEOUT).
 #define RAS_KEEPALIVE_TIMEOUT_ERROR RAS_STUCK_TIMEOUT
 
 // Retry connecting on failing sockets (ECONNREFUSED, etc.) once a second.
-#define RAS_CONNECT_RETRY (1 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_CONNECT_RETRY rasTimeoutFactorNs(1)
 
 // If we can't connect in 5 seconds, we generate a warning and try alternative connections.
 #define RAS_CONNECT_WARN RAS_KEEPALIVE_TIMEOUT_WARN
 
 // Abort a busy socket (one we are trying to send on, or one that was being established) if there's been
 // no sign of progress in 20 second.  We will try to re-establish communication (up to RAS_PEER_DEAD_TIMEOUT).
-#define RAS_STUCK_TIMEOUT (20 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_STUCK_TIMEOUT rasTimeoutFactorNs(20)
 
 // Terminate ad-hoc connections that have not been used in 60 seconds.
-#define RAS_IDLE_TIMEOUT (60 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_IDLE_TIMEOUT rasTimeoutFactorNs(60)
 
 // If the socket is closed by peer within 5 seconds from the idle timeout, do not attempt to re-establish.
-#define RAS_IDLE_GRACE_PERIOD (5 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_IDLE_GRACE_PERIOD rasTimeoutFactorNs(5)
 
 // Declare a peer as dead and don't retry communicating with it if we couldn't reach it for 60 seconds.
-#define RAS_PEER_DEAD_TIMEOUT (60 * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_PEER_DEAD_TIMEOUT rasTimeoutFactorNs(60)
 
 // Abort a leg of a collective operation if the response takes more than 5 seconds to arrive *and* one of the
 // connections experiences delays.
-#define RAS_COLLECTIVE_LEG_TIMEOUT (RAS_COLLECTIVE_LEG_TIMEOUT_SEC * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_COLLECTIVE_LEG_TIMEOUT rasTimeoutFactorNs(RAS_COLLECTIVE_LEG_TIMEOUT_SEC)
 
 // Abort a whole collective operation after at most RAS_COLLECTIVE_LEG_TIMEOUT+RAS_COLLECTIVE_EXTRA_TIMEOUT (10s).
-#define RAS_COLLECTIVE_EXTRA_TIMEOUT \
-  (RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC * CLOCK_UNITS_PER_SEC * ncclParamRasTimeoutFactor())
+#define RAS_COLLECTIVE_EXTRA_TIMEOUT rasTimeoutFactorNs(RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC)
 
 // Structure used for tracking the progress of sending a RAS message.
 struct rasMsgMeta {
@@ -522,7 +523,6 @@ extern int nNcclComms;
 extern bool ncclCommsSorted;
 extern char rasLine[SOCKET_NAME_MAXLEN + 1];
 
-int64_t ncclParamRasTimeoutFactor();
 ncclResult_t rasMsgAlloc(struct rasMsg** msg, size_t msgLen);
 void rasMsgFree(struct rasMsg* msg);
 void rasConnEnqueueMsg(struct rasConnection* conn, struct rasMsg* msg, size_t msgLen, bool front = false);

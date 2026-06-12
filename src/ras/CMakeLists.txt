@@ -4,6 +4,7 @@ set(RAS_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/rasnet.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/peers.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/ras.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/ras_param.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/client_support.cc
 )
 

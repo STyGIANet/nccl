@@ -229,9 +229,11 @@ endif()
 
 ###################### Create a ras binary executable ############################
 if(NOT NCCL_OS_WINDOWS)
-set(RAS_BINSRCFILES ras/client.cc)
+set(RAS_BINSRCFILES ras/client.cc ras/ras_param.cc)
 
 add_executable(ncclras ${RAS_BINSRCFILES})
+
+target_compile_definitions(ncclras PRIVATE NCCL_RAS_CLIENT)
 
 target_include_directories(ncclras
   PUBLIC

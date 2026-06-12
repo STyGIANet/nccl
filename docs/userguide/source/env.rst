@@ -1828,14 +1828,15 @@ NCCL_RAS_TIMEOUT_FACTOR
 
 Specify the multiplier factor to apply to all the timeouts of the RAS subsystem. RAS relies on multiple timeouts,
 ranging from 5 to 60 seconds, to determine the state of the application and to maintain its internal communication, with
-complex interdependencies between different timeouts. This variable can be used to scale up all these timeouts in a
-safe, consistent manner, should any of the defaults turn out to be too small; e.g., if the NCCL application is subject
-to high-overhead debugging/tracing/etc., which makes its execution less predictable. If one wants to use the
-``ncclras`` client in such circumstances, its timeout may need to be increased as well (or disabled).
+complex interdependencies between different timeouts. This variable can be used to scale all these timeouts in a
+safe, consistent manner. Values greater than 1 increase the timeouts; e.g., if the NCCL application is subject
+to high-overhead debugging/tracing/etc., which makes its execution less predictable. Values between 0 and 1 reduce
+the timeouts and are primarily intended for testing. The ``ncclras`` client applies the same factor to its default
+socket timeouts.
 
 Values accepted
 ^^^^^^^^^^^^^^^
-Default is 1; define and set to larger values to increase the timeouts.
+Default is 1. A positive floating-point number. Values less than or equal to 0 are ignored and replaced with 1.
 
 .. _NCCL_LAUNCH_ORDER_IMPLICIT:
 

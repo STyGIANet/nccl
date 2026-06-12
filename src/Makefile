@@ -85,7 +85,7 @@ LIBTARGET  := $(LIBNAME:%=%.$(NCCL_MAJOR).$(NCCL_MINOR).$(NCCL_PATCH))
 STATICLIBTARGET := $(STATICLIBNAME)
 PKGTARGET  := $(PKGCONFIGFILE)
 LIBOBJ     := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
-BINOBJ     := $(BINSRCFILES:%.cc=$(OBJDIR)/%.o)
+BINOBJ     := $(BINSRCFILES:%.cc=$(OBJDIR)/%.o) $(OBJDIR)/ras/ras_param_client.o
 PARAMBINOBJ     := $(PARAMBINSRCFILES:%.cc=$(OBJDIR)/%.o)
 DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl
@@ -232,6 +232,11 @@ $(PKGDIR)/%.pc : %.pc
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(PKGDIR)
 	install -m 644 $< $@
+
+$(OBJDIR)/ras/ras_param_client.o: ras/ras_param.cc $(INCTARGETS)
+	@printf "Compiling  %-35s > %s\n" $< $@
+	mkdir -p `dirname $@`
+	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) -DNCCL_RAS_CLIENT -Iinclude -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
 
 $(OBJDIR)/%.o : %.cc $(INCTARGETS)
 	@printf "Compiling  %-35s > %s\n" $< $@

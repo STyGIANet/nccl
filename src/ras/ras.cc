@@ -77,8 +77,6 @@ static void* rasThreadMain(void*);
 
 static void rasTerminate();
 
-NCCL_PARAM(RasTimeoutFactor, "RAS_TIMEOUT_FACTOR", 1);
-
 //////////////////////////////////////////////////
 // Functions invoked from regular NCCL threads. //
 //////////////////////////////////////////////////
