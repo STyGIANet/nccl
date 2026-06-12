@@ -24,8 +24,7 @@
 #define TIMEOUT_INCREMENT 1
 
 static void timevalAddSeconds(struct timeval* tv, double seconds) {
-  if (seconds <= 0.0)
-    return;
+  if (seconds <= 0.0) return;
   const int64_t usec = (int64_t)(seconds * 1e6);
   tv->tv_usec += (suseconds_t)(usec % 1000000);
   tv->tv_sec += (time_t)(usec / 1000000);
@@ -292,8 +291,7 @@ retry:
   }
   if (timeout) {
     // Increase the socket timeout to accommodate NCCL timeout.
-    const double legTimeout = (timeout > 0 ? timeout
-                                           : rasTimeoutFactorSec(RAS_COLLECTIVE_LEG_TIMEOUT_SEC));
+    const double legTimeout = (timeout > 0 ? timeout : rasTimeoutFactorSec(RAS_COLLECTIVE_LEG_TIMEOUT_SEC));
     timevalAddSeconds(&tv, legTimeout + rasTimeoutFactorSec(RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC));
 #if defined(NCCL_OS_LINUX)
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {

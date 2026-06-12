@@ -26,8 +26,7 @@ static const char* rasParamGetEnv(const char* name) {
 static float rasLoadTimeoutFactor() {
   constexpr float kDefault = 1.0f;
   const char* str = ncclGetEnv("NCCL_RAS_TIMEOUT_FACTOR");
-  if (str == nullptr || str[0] == '\0')
-    return kDefault;
+  if (str == nullptr || str[0] == '\0') return kDefault;
 
   errno = 0;
   char* end = nullptr;
@@ -50,8 +49,7 @@ static float rasLoadTimeoutFactor() {
 float ncclParamRasTimeoutFactor(void) {
   constexpr float uninitialized = -1.0f;
   static float cache = uninitialized;
-  if (cache < 0.0f)
-    cache = rasLoadTimeoutFactor();
+  if (cache < 0.0f) cache = rasLoadTimeoutFactor();
   return cache;
 }
 
