@@ -67,6 +67,7 @@ static int rasCollCommsMissingRankSearch(const void* k, const void* e);
 static ncclResult_t getNewCollEntry(struct rasCollective** pColl) {
   struct rasCollective* coll;
   int nRasConns;
+  ncclResult_t ret = ncclSuccess;
 
   NCCLCHECK(ncclCalloc(&coll, 1));
 
@@ -75,7 +76,7 @@ static ncclResult_t getNewCollEntry(struct rasCollective** pColl) {
   // We are unlikely to use the whole array, but at least we won't need to realloc.
   nRasConns = 0;
   for (struct rasConnection* conn = rasConnsHead; conn; conn = conn->next) nRasConns++;
-  NCCLCHECK(ncclCalloc(&coll->fwdConns, nRasConns));
+  NCCLCHECKGOTO(ncclCalloc(&coll->fwdConns, nRasConns), ret, fail);
 
   if (rasCollectivesHead) {
     rasCollectivesTail->next = coll;
@@ -87,6 +88,10 @@ static ncclResult_t getNewCollEntry(struct rasCollective** pColl) {
 
   *pColl = coll;
   return ncclSuccess;
+fail:
+  free(coll->fwdConns);
+  free(coll);
+  return ret;
 }
 
 // Initializes a collective request by giving it a unique ID.
