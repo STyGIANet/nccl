@@ -48,9 +48,15 @@ ncclResult_t ncclTuningRingModelInit(struct ncclComm* comm, int id, int* /*enabl
     ncclTuningGetHwIndexes(comm, algo, &intraHw, &interHw);
 
     float intraLat = comm->tuningContext.tuningConstants.hwLatencies[intraHw][algo][proto];
-    // With ppn=1 latencies are fully exposed, use the Tree network latency
-    float interLat =
-      comm->nNodes == 1 ? intraLat : comm->tuningContext.tuningConstants.hwLatencies[interHw][algo][proto];
+    // Preserve the pre-refactor model: with one rank per node, Ring inter-node steps use the exposed Tree NET latency.
+    float interLat;
+    if (comm->nNodes == 1) {
+      interLat = intraLat;
+    } else if (comm->maxLocalRanks == 1) {
+      interLat = comm->tuningContext.tuningConstants.hwLatencies[NCCL_HW_NET][NCCL_ALGO_TREE][proto];
+    } else {
+      interLat = comm->tuningContext.tuningConstants.hwLatencies[interHw][algo][proto];
+    }
     interLat += comm->graphs[algo].latencyInter;
     if (proto == NCCL_PROTO_SIMPLE) interLat += comm->graphs[algo].latencyInter;
 

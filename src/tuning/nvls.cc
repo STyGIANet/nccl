@@ -101,7 +101,7 @@ ncclResult_t ncclTuningNvlsModelInit(struct ncclComm* comm, int id, int enabled[
       }
     }
 
-    comm->tuningContext.generalBandwidths[c][algo][proto] = bw * comm->nRanks / nSteps;
+    comm->tuningContext.generalBandwidths[c][algo][proto] = c == ncclFuncAllReduce ? bw * comm->nRanks / nSteps : bw;
     comm->tuningContext.generalLatencies[c][algo][proto] =
       comm->tuningContext.tuningConstants.baseLatencies[algo][proto];
 
@@ -139,7 +139,7 @@ ncclResult_t ncclTuningNvlsModelSim(struct ncclTuningInput_t* const inputs, stru
     tuning->timeUs = -1.0;
     return ret;
   }
-  if (inputs->func != ncclFuncAllReduce && inputs->comm->localRanks > NCCL_MAX_NVLS_ARITY) {
+  if (inputs->func != ncclFuncAllReduce && inputs->comm->graphs[tuning->algo].nChannels > NCCL_MAX_NVLS_ARITY) {
     tuning->valid = 0;
     tuning->timeUs = -1.0;
     return ret;

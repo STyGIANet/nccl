@@ -38,7 +38,6 @@ ncclResult_t ncclTuningCollnetModelInit(struct ncclComm* comm, int id, int enabl
   int nNodes = comm->nNodes;
   int nRanks = comm->nRanks;
   float ppn = (float)nRanks / nNodes;
-  int compCapIndex = ncclTuningGetCompCapIndex(comm);
 
   for (int c = 0; c < NCCL_NUM_FUNCTIONS; c++) {
     comm->tuningContext.generalLatencies[c][algo][proto] = -1.0;
@@ -51,11 +50,14 @@ ncclResult_t ncclTuningCollnetModelInit(struct ncclComm* comm, int id, int enabl
     if (c == ncclFuncAllGather || c == ncclFuncReduceScatter) {
       busBw = ppn * std::min(comm->graphs[algo].bwIntra, comm->graphs[algo].bwInter * 0.9f);
     } else {
-      // Collnet+Direct requires all GPUs to have a local NIC to work at full speed
-      float factor = ppn / (1.0 * comm->graphs[algo].nChannels); // GPU/NIC ratio
-      factor -= (factor - 1) / 2;
-      busBw /= factor;
-      if (compCapIndex >= 90) busBw *= .85;
+      busBw = comm->graphs[algo].nChannels * comm->graphs[algo].bwIntra;
+      if (algo == NCCL_ALGO_COLLNET_DIRECT) {
+        // Collnet+Direct requires all GPUs to have a local NIC to work at full speed
+        float factor = ppn / (1.0 * comm->graphs[algo].nChannels); // GPU/NIC ratio
+        factor -= (factor - 1) / 2;
+        busBw /= factor;
+        if (comm->minCompCap >= 90) busBw *= .85;
+      }
     }
 
     if (comm->nNodes > 1) {
@@ -90,7 +92,7 @@ ncclResult_t ncclTuningCollnetModelInit(struct ncclComm* comm, int id, int enabl
       }
     }
 
-    comm->tuningContext.generalBandwidths[c][algo][proto] = busBw * 0.5;
+    comm->tuningContext.generalBandwidths[c][algo][proto] = c == ncclFuncAllReduce ? busBw * 0.5 : busBw;
     comm->tuningContext.generalLatencies[c][algo][proto] =
       comm->tuningContext.tuningConstants.baseLatencies[algo][proto];
 
