@@ -1056,7 +1056,8 @@ void ncclDevCommDump(struct ncclDevComm* devComm) {
   printf(" LSA Rank %d/%d CPC32 %d\n", devComm->lsaRank, devComm->lsaSize, devComm->lsaSize_rcp32);
   printf("\n");
   printf(" GIN\n");
-  printf("  Mode %s\n", devComm->ginConnectionsRailed ? "Rail" : "Full");
+  printf("  Connection stride %d\n", devComm->ginConnectionStride);
+  printf("  Context stride %d\n", devComm->ginContextStride);
   printf("  Connections %d\n", devComm->ginConnectionCount);
   for (int c = 0; c < devComm->ginConnectionCount; c++) {
     printf("   [%d] %d %p\n", c, devComm->ginNetDeviceTypes[c], devComm->ginHandles[c]);
@@ -1170,8 +1171,6 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
   outDevComm->lsaRank = devr->lsaSelf;
   outDevComm->lsaSize = devr->lsaSize;
   outDevComm->lsaSize_rcp32 = idivRcp32(devr->lsaSize);
-  outDevComm->ginConnectionsRailed = comm->sharedRes->ginState.ginConnectionType == NCCL_GIN_CONNECTION_RAIL;
-  outDevComm->ginContextsRailed = requestedConnectionType == NCCL_GIN_CONNECTION_RAIL;
   if (isInternal) outDevComm->abortFlag = comm->abortFlagDev;
 
   NCCLCHECKGOTO(symTeamObtain(comm, lsa, /*multicast=*/reqs->lsaMultimem, &tmLsa), ret, fail);
@@ -1493,6 +1492,7 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
 
   if (props->version >= NCCL_VERSION(2, 31, 0)) {
     props->commHash = comm->commHash;
+    props->ginMinStride = (comm->globalGinSupport == NCCL_GIN_CONNECTION_FULL) ? 1 : comm->contiguousRanksPerHost;
   }
 
   if (devCompat->commPropertiesFilter) {

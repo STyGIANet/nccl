@@ -52,9 +52,9 @@ struct ncclDevComm {
   int ginCounterCount;
   uint64_t* ginSignalShadows;
   uint32_t ginContextCount;
-  bool ginConnectionsRailed;
+  int ginConnectionStride;
+  int ginContextStride; // Stride according to world team, not according to connected ranks
   bool ginStrongLegacySignals;
-  bool ginContextsRailed;
 
   // FT related
   uint32_t* abortFlag;

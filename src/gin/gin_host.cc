@@ -129,6 +129,8 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
   int nGinRanks;
   int myGinRank;
+  // Connect the maximum supported connection type. Any future devComm may request
+  // up to this connection type.
   if (ginState->ginConnectionType == NCCL_GIN_CONNECTION_FULL) {
     nGinRanks = comm->nRanks;
     myGinRank = comm->rank;
@@ -136,11 +138,15 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
       handles[r] = allHandles + r * NCCL_NET_HANDLE_MAXSIZE;
     }
   } else {
-    ncclTeam_t railTeam = ncclTeamRail(comm);
-    nGinRanks = railTeam.nRanks;
-    myGinRank = railTeam.rank;
+    ncclTeam_t ginTeam = {
+      .nRanks = comm->nRanks / comm->contiguousRanksPerHost,
+      .rank = comm->rank / comm->contiguousRanksPerHost,
+      .stride = comm->contiguousRanksPerHost,
+    };
+    nGinRanks = ginTeam.nRanks;
+    myGinRank = ginTeam.rank;
     for (int r = 0; r < nGinRanks; r++) {
-      int worldRank = ncclTeamRankToWorld(comm, railTeam, r);
+      int worldRank = ncclTeamRankToWorld(comm, ginTeam, r);
       handles[r] = allHandles + worldRank * NCCL_NET_HANDLE_MAXSIZE;
     }
   }
@@ -183,6 +189,7 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
                                  struct ncclDevComm* devComm) {
   struct ncclGinState* ginState = &comm->sharedRes->ginState;
   struct ncclGinBackendState* backend = &ginState->backends[0];
+  ncclGinConfig_t ginConfig;
 
   if (reqs->ginStrongSignalsRequired && !backend->supportsStrongSignals) {
     WARN("GIN strong signals are required, but the GIN plugin does not support them.");
@@ -206,7 +213,6 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
   }
   devComm->ginContextCount = nContextsTotal;
   devComm->ginConnectionCount = backend->ginCommCount;
-
   if (!reqs->ginExclusiveContexts) {
     // TODO: check if a shared devComm in the list could match our requirements.
   }
@@ -255,16 +261,46 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
 
   ncclResult_t ret = ncclSuccess;
 
-  ncclGinConfig_t ginConfig = {
+  int connectedStride =
+    comm->sharedRes->ginState.ginConnectionType == NCCL_GIN_CONNECTION_FULL ? 1 : comm->contiguousRanksPerHost;
+  int requestedStride = 1;
+  if (reqs->ginConnectionType == NCCL_GIN_CONNECTION_CUSTOM_STRIDE) {
+    requestedStride = reqs->ginCustomStride;
+  } else if (reqs->ginConnectionType == NCCL_GIN_CONNECTION_RAIL) {
+    requestedStride = ncclTeamRail(comm).stride;
+  }
+
+  if (requestedStride == 0) {
+    WARN("Cannot create DevComm with a GIN rank stride of 0. To disable GIN, set reqs->ginConnectionType to "
+         "NCCL_GIN_CONNECTION_NONE.");
+    ret = ncclInvalidUsage;
+    goto end;
+  }
+  if (requestedStride > ncclTeamRail(comm).stride) {
+    // Hierarchical barriers assume GIN is at least RAIL connected.
+    WARN("Cannot create DevComm with a GIN rank stride %d greater than the rail team stride %d", requestedStride,
+         ncclTeamRail(comm).stride);
+    ret = ncclInvalidUsage;
+    goto end;
+  }
+  if (requestedStride % connectedStride != 0) {
+    WARN("Cannot create DevComm with the requested GIN rank stride %d, this comm only supports strides that are "
+         "multiples of %d",
+         requestedStride, connectedStride);
+    ret = ncclInvalidUsage;
+    goto end;
+  }
+
+  devComm->ginConnectionStride = connectedStride;
+  devComm->ginContextStride = requestedStride;
+  ginConfig = {
     reqs->ginSignalCount,
     reqs->ginCounterCount,
     nContextsPerComm,
     reqs->ginQueueDepth,
     reqs->ginTrafficClass != NCCL_CONFIG_UNDEF_INT ? reqs->ginTrafficClass : comm->config.trafficClass,
     backendVersion,
-    reqs->ginConnectionType == NCCL_GIN_CONNECTION_RAIL && ginState->ginConnectionType == NCCL_GIN_CONNECTION_FULL ?
-      comm->devrState.lsaSize :
-      1
+    /*rankStride*/ requestedStride / connectedStride,
   };
 
   for (int n = 0; n < backend->ginCommCount; n++) {
@@ -308,6 +344,7 @@ end:
     for (int n = 0; n < backend->ginCommCount; n++) {
       if (ginStateDevComm->ginCtx[n]) backend->ncclGin->destroyContext(ginStateDevComm->ginCtx[n]);
     }
+    devComm->ginContextCount = 0;
     free(ginStateDevComm);
   }
   return ret;

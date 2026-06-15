@@ -1037,6 +1037,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   int maxLocalNetCount = 0;
   int minLocalCollNetCount = INT_MAX;
   int maxLocalCollNetCount = 0;
+  int currentHostSize = 0;
+  uint64_t prevHostHash = 0;
 
   timers[TIMER_INIT_ALLGATHER] = clockNano();
   // AllGather1 - begin
@@ -1046,7 +1048,32 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   COMPILER_ATOMIC_STORE(&comm->peerInfoValid, true, std::memory_order_release);
 
   comm->cuMemSupport = 1;
+  comm->contiguousRanksPerHost = 0;
+  currentHostSize = 0;
+  prevHostHash = comm->peerInfo[0].hostHash;
   for (int i = 0; i < nranks; i++) {
+    // "Contiguous" host size detection: ranks are only considered on the same "contiguous" host if they are
+    // adjacent and have the same host hash.
+    if (comm->peerInfo[i].hostHash != prevHostHash) {
+      if (comm->contiguousRanksPerHost == 0) {
+        comm->contiguousRanksPerHost = currentHostSize;
+      } else if (currentHostSize != comm->contiguousRanksPerHost) {
+        comm->contiguousRanksPerHost = INT_MAX;
+        break;
+      }
+      prevHostHash = comm->peerInfo[i].hostHash;
+      currentHostSize = 1;
+    } else {
+      currentHostSize++;
+    }
+    if (i == nranks - 1) {
+      if (comm->contiguousRanksPerHost == 0) {
+        comm->contiguousRanksPerHost = currentHostSize;
+      } else if (currentHostSize != comm->contiguousRanksPerHost) {
+        comm->contiguousRanksPerHost = INT_MAX;
+      }
+    }
+
     if (comm->peerInfo[i].version != comm->peerInfo[rank].version) {
       WARN("Mismatched NCCL version detected : rank %d version %d rank %d version %d", i, comm->peerInfo[i].version,
            rank, comm->peerInfo[rank].version);
@@ -1670,7 +1697,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   comm->globalGinSupport = NCCL_GIN_CONNECTION_NONE;
   if (globalGinTypeBitMask && globalCuMemGdrSupport && !comm->hasMloPart) {
     NCCLCHECKGOTO(ncclGinSetDefaultBackend(comm, globalGinTypeBitMask), ret, fail);
-    comm->globalGinSupport = globalCrossNicSupport ? NCCL_GIN_CONNECTION_FULL : NCCL_GIN_CONNECTION_RAIL;
+    if (globalCrossNicSupport) {
+      comm->globalGinSupport = NCCL_GIN_CONNECTION_FULL;
+    } else if (comm->contiguousRanksPerHost != INT_MAX) {
+      comm->globalGinSupport = NCCL_GIN_CONNECTION_RAIL;
+    }
   }
   comm->globalRmaProxySupport = globalRmaPluginSupport && globalCrossNicSupport && globalCuMemGdrSupport;
   isOneLsaTeams = ncclDevrIsOneLsaTeam(comm);
@@ -1683,6 +1714,14 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
          "Symmetric memory is not supported. cuMemEnable %d, "
          "globalGinSupport %d, cuMemGdrSupport %d",
          ncclCuMemEnable(), comm->globalGinSupport, globalCuMemGdrSupport);
+  }
+
+  if (comm->globalGinSupport == NCCL_GIN_CONNECTION_NONE) {
+    INFO(NCCL_INIT,
+         "GIN is not supported. contiguousRanksPerHost %d, crossNicSupport %d, cuMemGdrSupport %d globalGinSupport %d "
+         "hasMloPart %d",
+         comm->contiguousRanksPerHost, globalCrossNicSupport, globalCuMemGdrSupport, comm->globalGinSupport,
+         comm->hasMloPart);
   }
 
   comm->ceColl.baseUCSymReadyPtr = NULL;

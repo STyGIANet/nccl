@@ -73,6 +73,7 @@ typedef enum {
   NCCL_GIN_CONNECTION_NONE,
   NCCL_GIN_CONNECTION_FULL,
   NCCL_GIN_CONNECTION_RAIL,
+  NCCL_GIN_CONNECTION_CUSTOM_STRIDE,
 } ncclGinConnectionType_t;
 
 struct ncclDevCommRequirements {
@@ -112,6 +113,9 @@ struct ncclDevCommRequirements {
   // Set to false if GIN VA signals will not be needed by the kernels using this devComm (defaults to true).
   // When false, the use of GIN VA signals results in undefined behavior.
   bool ginVaSignalsRequired;
+
+  // Stride of ranks to connect for GIN if ginConnectionType is NCCL_GIN_CONNECTION_CUSTOM_STRIDE.
+  int ginCustomStride;
 };
 
 // clang-format off: maintain hand-formatted code
@@ -190,6 +194,7 @@ struct ncclCommProperties {
   bool hostRmaSupport;
   ncclGinType_t railedGinType;
   uint64_t commHash;
+  int ginMinStride;
 };
 
 NCCL_EXTERN_C __host__ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* props);

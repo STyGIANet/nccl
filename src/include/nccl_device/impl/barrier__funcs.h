@@ -75,7 +75,9 @@ NCCL_DEVICE_INLINE ncclGinBarrierSession<Coop>& ncclBarrierSession<Coop>::ginBar
 template <typename Coop>
 NCCL_DEVICE_INLINE bool ncclBarrierSession<Coop>::useWorldForFence(ncclGinFenceLevel fence) const {
   bool wantPut = fence & ncclGinFenceLevel::Put;
-  return wantPut && this->gin.present && !this->gin.thing.comm.ginContextsRailed && this->outerWorldGinBar.present;
+  // GIN is never less dense than ncclTeamRail (checked in DevCommCreate)
+  bool ginIsRailTeam = this->gin.thing.comm.ginContextStride == this->gin.thing.comm.lsaSize;
+  return wantPut && this->gin.present && !ginIsRailTeam && this->outerWorldGinBar.present;
 }
 #endif
 

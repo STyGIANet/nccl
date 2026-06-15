@@ -30,11 +30,7 @@ NCCL_DEVICE_INLINE ncclGinWindow_t getGinWindow(ncclWindow_t window, int connect
 
 NCCL_DEVICE_INLINE int teamRankToGinRank(ncclDevComm const& comm, ncclTeam team, int teamRank) {
   int worldRank = ncclTeamRankToWorld(comm, team, teamRank);
-  if (comm.ginConnectionsRailed) {
-    return utility::idivFast32(worldRank, comm.lsaSize, comm.lsaSize_rcp32);
-  } else {
-    return worldRank;
-  }
+  return worldRank / comm.ginConnectionStride; // TODO(Katie): make faster??
 }
 
 // Multi-segment put/get helpers
@@ -127,14 +123,8 @@ template <unsigned beMask>
 NCCL_DEVICE_INLINE ncclGinCtx_M<beMask> ncclGin_BackendMask<beMask>::_makeCtx() const {
   ncclGinCtx_M<beMask> ans;
   ans.backend = (ncclNetDeviceType)_ginBackend;
-  if (comm.ginConnectionsRailed) {
-    ncclTeam teamRail = ncclTeamRail(comm);
-    ans.rank = teamRail.rank;
-    ans.nRanks = teamRail.nRanks;
-  } else {
-    ans.rank = comm.rank;
-    ans.nRanks = comm.nRanks;
-  }
+  ans.rank = comm.rank / comm.ginConnectionStride;
+  ans.nRanks = comm.nRanks / comm.ginConnectionStride;
   ans.handle = _ginHandle;
   ans.contextId = contextId;
   ans.resourceSharingMode = (uint8_t)this->resourceSharingMode;
@@ -145,14 +135,8 @@ NCCL_DEVICE_INLINE ncclGinCtx ncclGin_C_makeCtx(ncclGin_C* net) {
   ncclGinCtx ans;
   ans.backendMask = net->backendMask;
   ans.backend = (ncclNetDeviceType)net->_ginBackend;
-  if (net->comm.ginConnectionsRailed) {
-    ncclTeam teamRail = ncclTeamRail(net->comm);
-    ans.rank = teamRail.rank;
-    ans.nRanks = teamRail.nRanks;
-  } else {
-    ans.rank = net->comm.rank;
-    ans.nRanks = net->comm.nRanks;
-  }
+  ans.rank = net->comm.rank / net->comm.ginConnectionStride;
+  ans.nRanks = net->comm.nRanks / net->comm.ginConnectionStride;
   ans.handle = net->_ginHandle;
   ans.contextId = net->contextId;
   ans.resourceSharingMode = (uint8_t)net->resourceSharingMode;

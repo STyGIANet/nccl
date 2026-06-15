@@ -606,6 +606,7 @@ struct ncclComm {
   int MNNVL; // true when MNNVL is available
   struct cliqueInfo clique; // Our MNNVL clique information
   int cliqueRank; // Our rank within the MNNVL clique
+  int contiguousRanksPerHost; // Number contiguous ranks per host. INT_MAX if non-uniform.
 
   // NVL Domain info
   ncclNvlDomainInfo_v5_t nvlDomainInfo;
