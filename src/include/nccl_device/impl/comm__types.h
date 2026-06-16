@@ -63,6 +63,7 @@ struct ncclDevComm {
   ncclGinBarrierHandle_t hybridRailGinBarrier;
 
   ncclGinBarrierHandle_t worldGinBarrier;
+  uint32_t ginConnectionStride_rcp32;
 };
 
 #endif // _NCCL_DEVICE_COMM__TYPES_H_

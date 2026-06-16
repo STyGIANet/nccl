@@ -30,7 +30,10 @@ NCCL_DEVICE_INLINE ncclGinWindow_t getGinWindow(ncclWindow_t window, int connect
 
 NCCL_DEVICE_INLINE int teamRankToGinRank(ncclDevComm const& comm, ncclTeam team, int teamRank) {
   int worldRank = ncclTeamRankToWorld(comm, team, teamRank);
-  return worldRank / comm.ginConnectionStride; // TODO(Katie): make faster??
+  if (comm.ginConnectionStride == 1) {
+    return worldRank;
+  }
+  return nccl::utility::idivFast32(worldRank, comm.ginConnectionStride, comm.ginConnectionStride_rcp32);
 }
 
 // Multi-segment put/get helpers
@@ -121,10 +124,16 @@ NCCL_DEVICE_INLINE void ncclGin_C_initWithResourceSharingMode(ncclGin_C* net, un
 #ifdef __CUDACC__
 template <unsigned beMask>
 NCCL_DEVICE_INLINE ncclGinCtx_M<beMask> ncclGin_BackendMask<beMask>::_makeCtx() const {
+  using nccl::utility::idivFast32;
   ncclGinCtx_M<beMask> ans;
   ans.backend = (ncclNetDeviceType)_ginBackend;
-  ans.rank = comm.rank / comm.ginConnectionStride;
-  ans.nRanks = comm.nRanks / comm.ginConnectionStride;
+  if (comm.ginConnectionStride == 1) {
+    ans.rank = comm.rank;
+    ans.nRanks = comm.nRanks;
+  } else {
+    ans.rank = idivFast32(comm.rank, comm.ginConnectionStride, comm.ginConnectionStride_rcp32);
+    ans.nRanks = idivFast32(comm.nRanks, comm.ginConnectionStride, comm.ginConnectionStride_rcp32);
+  }
   ans.handle = _ginHandle;
   ans.contextId = contextId;
   ans.resourceSharingMode = (uint8_t)this->resourceSharingMode;
@@ -132,11 +141,17 @@ NCCL_DEVICE_INLINE ncclGinCtx_M<beMask> ncclGin_BackendMask<beMask>::_makeCtx() 
 }
 
 NCCL_DEVICE_INLINE ncclGinCtx ncclGin_C_makeCtx(ncclGin_C* net) {
+  using nccl::utility::idivFast32;
   ncclGinCtx ans;
   ans.backendMask = net->backendMask;
   ans.backend = (ncclNetDeviceType)net->_ginBackend;
-  ans.rank = net->comm.rank / net->comm.ginConnectionStride;
-  ans.nRanks = net->comm.nRanks / net->comm.ginConnectionStride;
+  if (net->comm.ginConnectionStride == 1) {
+    ans.rank = net->comm.rank;
+    ans.nRanks = net->comm.nRanks;
+  } else {
+    ans.rank = idivFast32(net->comm.rank, net->comm.ginConnectionStride, net->comm.ginConnectionStride_rcp32);
+    ans.nRanks = idivFast32(net->comm.nRanks, net->comm.ginConnectionStride, net->comm.ginConnectionStride_rcp32);
+  }
   ans.handle = net->_ginHandle;
   ans.contextId = net->contextId;
   ans.resourceSharingMode = (uint8_t)net->resourceSharingMode;

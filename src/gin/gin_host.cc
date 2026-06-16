@@ -292,6 +292,7 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
   }
 
   devComm->ginConnectionStride = connectedStride;
+  devComm->ginConnectionStride_rcp32 = idivRcp32(connectedStride);
   devComm->ginContextStride = requestedStride;
   ginConfig = {
     reqs->ginSignalCount,

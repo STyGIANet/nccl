@@ -79,12 +79,19 @@ NCCL_DEVICE_INLINE ncclResult_t ncclGinBarrierSession_internal<Coop>::syncIntern
   // pair per thread so the flush is parallelised on both axes.
   auto fenceFlush = [&](cuda::memory_order order) {
     if (this->fenceAllContexts) {
-      int fenceStride = this->net.comm.ginContextStride;
-      ncclTeam fenceTeam = {
-        .nRanks = this->net.comm.nRanks / fenceStride, // TODO(Katie): make faster??
-        .rank = this->net.comm.rank / fenceStride,
-        .stride = fenceStride,
-      };
+      ncclTeam fenceTeam;
+      int stride = this->net.comm.ginContextStride;
+      if (stride == 1) {
+        fenceTeam = ncclTeamWorld(this->net.comm);
+      } else if (stride == this->net.comm.lsaSize) {
+        fenceTeam = ncclTeamRail(this->net.comm);
+      } else { // Custom stride is used
+        fenceTeam = {
+          .nRanks = this->net.comm.nRanks / stride,
+          .rank = this->net.comm.rank / stride,
+          .stride = stride,
+        };
+      }
       int nCtx = (int)this->net.comm.ginContextCount;
       int nPeers = fenceTeam.nRanks;
       int total = nCtx * nPeers;
