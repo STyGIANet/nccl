@@ -31,11 +31,12 @@ NCCL_PARAM(ElasticBufferRegister, "ELASTIC_BUFFER_REGISTER", 1);
 NCCL_PARAM(SymReuseSysmemHandles, "SYM_REUSE_SYSMEM_HANDLES", 0);
 NCCL_PARAM(RMADisable, "RMA_DISABLE", 0);
 
-extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v22907, ncclDevCommCompat_v23000;
+extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v22907, ncclDevCommCompat_v23000,
+  ncclDevCommCompat_v23100;
 
 // The order of entries in the array shouldn't matter (with the exception of the terminating nullptr)
 static struct ncclDevCommCompat* devCommCompat[] = {&ncclDevCommCompat_v22902, &ncclDevCommCompat_v22907,
-                                                    &ncclDevCommCompat_v23000, nullptr};
+                                                    &ncclDevCommCompat_v23000, &ncclDevCommCompat_v23100, nullptr};
 
 // Global window map using intrusive address map
 // Uses ncclDevrWindow directly (vidmem as key, next pointer embedded in struct)

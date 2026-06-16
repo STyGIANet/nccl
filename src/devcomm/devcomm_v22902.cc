@@ -149,8 +149,8 @@ static ncclResult_t ncclDevCommCopyOldToNew_v22902(ncclComm_t comm, struct ncclD
 }
 
 struct ncclDevCommCompat ncclDevCommCompat_v22902 = {
-  NCCL_VERSION(2, 29, 2),
-  NCCL_VERSION(2, 29, 3), // minVersion, maxVersion
+  NCCL_VERSION(2, 29, 2), // minVersion
+  NCCL_VERSION(2, 29, 3), // maxVersion
   ncclCommPropertiesFilter_v22902,                // commPropertiesFilter
   ncclDevCommRequirementsFilter_v22902,           // devCommRequirementsFilter
   ncclDevCommCopyNewToOld_v22902,                 // devCommCopyNewToOld
