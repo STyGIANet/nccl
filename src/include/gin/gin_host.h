@@ -16,7 +16,7 @@
 #include <thread>
 #include <mutex>
 
-#define NCCL_GIN_MAX_ACTIVE_BACKENDS 3
+#define NCCL_GIN_MAX_ACTIVE_BACKENDS 4
 struct ncclGinStateDevComm {
   int contextCount;
   void* ginCtx[NCCL_GIN_MAX_CONNECTIONS];
@@ -74,5 +74,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
 ncclResult_t ncclGinDeregister(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS]);
 
 ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError);
+
+ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);
 
 #endif

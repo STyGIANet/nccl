@@ -787,7 +787,10 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
   CUCHECK(cuDeviceGetAttribute(&cuMemGdrSupport, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
                                comm->cudaDev));
   info->cuMemGdrSupport = (cuMemGdrSupport == 1);
-  info->supportedGinType = comm->sharedRes->ginState.backends[0].ginType;
+  info->supportedGinTypeBitMask = 0;
+  for (int i = 0; i < comm->sharedRes->ginState.numActiveBackends; i++) {
+    info->supportedGinTypeBitMask |= BIT(comm->sharedRes->ginState.backends[i].ginType);
+  }
   info->rmaPluginAvailable = (comm->rmaState.rmaProxyState.ncclRma != nullptr);
 
   return ncclSuccess;
@@ -1021,7 +1024,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   int* pxnPeers = NULL;
   int* topParentLocalRanks = NULL;
   int p2pLevel = -1;
-  bool globalGinSupport = comm->sharedRes->ginState.backends[0].ginType != NCCL_GIN_TYPE_NONE;
+  uint64_t globalGinTypeBitMask = UINT64_MAX;
   bool globalCrossNicSupport = true;
   bool globalRmaPluginSupport = true;
   bool globalCuMemGdrSupport = true;
@@ -1064,7 +1067,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
         return ncclInvalidUsage;
       }
     }
-    globalGinSupport &= (comm->peerInfo[i].supportedGinType == comm->sharedRes->ginState.backends[0].ginType);
+    globalGinTypeBitMask &= comm->peerInfo[i].supportedGinTypeBitMask;
     globalCrossNicSupport &= comm->peerInfo[i].crossNicSupport;
     globalRmaPluginSupport &= comm->peerInfo[i].rmaPluginAvailable;
     globalCuMemGdrSupport &= comm->peerInfo[i].cuMemGdrSupport;
@@ -1665,7 +1668,8 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   NCCLCHECKGOTO(ncclTopoPathAllDirectNVLink(comm->topo, &comm->isAllDirectNvlink), ret, fail);
   comm->globalGinSupport = NCCL_GIN_CONNECTION_NONE;
-  if (globalGinSupport && globalCuMemGdrSupport && !comm->hasMloPart) {
+  if (globalGinTypeBitMask && globalCuMemGdrSupport && !comm->hasMloPart) {
+    NCCLCHECKGOTO(ncclGinSetDefaultBackend(comm, globalGinTypeBitMask), ret, fail);
     comm->globalGinSupport = globalCrossNicSupport ? NCCL_GIN_CONNECTION_FULL : NCCL_GIN_CONNECTION_RAIL;
   }
   comm->globalRmaProxySupport = globalRmaPluginSupport && globalCrossNicSupport && globalCuMemGdrSupport;

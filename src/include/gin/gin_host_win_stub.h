@@ -128,6 +128,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
 ncclResult_t ncclGinDeregister(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS]);
 ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError);
 ncclResult_t ncclGinGetDevCount(int ginPluginIndex, int* nPhysDev, int* nVirtDev);
+ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);
 
 /* Internal GIN API (from include/gin.h); stubbed on Windows */
 ncclResult_t ncclGinInit(struct ncclComm* comm);

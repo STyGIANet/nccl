@@ -134,6 +134,7 @@ static ncclResult_t ncclGinPluginInit(struct ncclComm* comm, ginPluginLib_t* plu
 static ncclResult_t ncclGinPluginAssignToComm(struct ncclComm* comm, int pluginIndex, void* ginContext,
                                               bool* isAssigned) {
   *isAssigned = false;
+  pluginLibs[pluginIndex].refCount++;
 
   if (pluginLibs[pluginIndex].state >= ncclGinPluginStateEnabled) {
     ncclGin_t* gin = pluginLibs[pluginIndex].ncclGin;
@@ -149,6 +150,20 @@ static ncclResult_t ncclGinPluginAssignToComm(struct ncclComm* comm, int pluginI
       return ncclSuccess;
     }
 
+    for (int idx = 0; idx < pluginIndex; idx++) {
+      if (pluginLibs[idx].state >= ncclGinPluginStateInitReady) {
+        ncclNetProperties_t prev_props;
+        ncclGin_t* prev_gin = pluginLibs[idx].ncclGin;
+        NCCLCHECK(prev_gin->getProperties(0, &prev_props));
+        if (props.netDeviceType == prev_props.netDeviceType) {
+          INFO(NCCL_INIT | NCCL_NET,
+               "GIN/Plugin: Skipping plugin %s index %d type %d, GIN type previously assigned plugin %s index %d",
+               gin->name, pluginIndex, props.netDeviceType, prev_gin->name, idx);
+          return ncclSuccess;
+        }
+      }
+    }
+
     if (isExternal && props.netDeviceType == NCCL_NET_DEVICE_GIN_PROXY) {
       INFO(NCCL_INIT | NCCL_NET,
            "GIN/Plugin: Skipping external proxy plugin %s index %d; using NCCL GIN proxy over RMA backend %s",
@@ -157,11 +172,15 @@ static ncclResult_t ncclGinPluginAssignToComm(struct ncclComm* comm, int pluginI
       return ncclSuccess;
     }
 
-    INFO(NCCL_INIT | NCCL_NET, "GIN/Plugin: Assigned plugin %s type %d to comm", gin->name, props.netDeviceType);
     // NOTE: The following cast is valid because ncclGinType_t variant values
     // should match NCCL_NET_DEVICE_GIN_* values from `enum ncclNetDeviceType`.
     ncclGinType_t backendType = static_cast<ncclGinType_t>(props.netDeviceType);
     struct ncclGinState* ginState = &comm->sharedRes->ginState;
+    if (ginState->numActiveBackends >= NCCL_GIN_MAX_ACTIVE_BACKENDS) {
+      WARN("GIN/Plugin: Max active backends reached, skipping plugin %s type %d", gin->name, props.netDeviceType);
+      return ncclSuccess;
+    }
+
     struct ncclGinBackendState* backend = &ginState->backends[ginState->numActiveBackends++];
     backend->ginType = backendType;
     backend->ncclGin = gin;
@@ -175,26 +194,7 @@ static ncclResult_t ncclGinPluginAssignToComm(struct ncclComm* comm, int pluginI
     backend->supportsStrongSignals = ginProperties.supportsStrongSignals;
     backend->supportsVASignals = ginProperties.supportsVASignals;
   }
-  pluginLibs[pluginIndex].refCount++;
   *isAssigned = true;
-  return ncclSuccess;
-}
-
-static ncclResult_t ncclGinPluginDisableOtherExternal(int pluginIndex) {
-  // Only if an external plugin is enabled, disable other external plugins
-  if (pluginIndex >= (pluginCount - NCCL_GIN_NUM_INTERNAL_PLUGINS)) return ncclSuccess;
-  char names[MAX_STR_LEN * (NCCL_GIN_MAX_PLUGINS - NCCL_GIN_NUM_INTERNAL_PLUGINS)] = {0};
-  for (int i = 0; i < (pluginCount - NCCL_GIN_NUM_INTERNAL_PLUGINS); i++) {
-    if (i != pluginIndex && pluginLibs[i].state >= ncclGinPluginStateEnabled) {
-      // Append all disabled plugin names to a string
-      snprintf(names + strlen(names), sizeof(names) - strlen(names), (strlen(names) == 0) ? "%s" : ", %s",
-               pluginLibs[i].name);
-      pluginLibs[i].state = ncclGinPluginStateDisabled;
-    }
-  }
-  if (strlen(names) > 0) {
-    INFO(NCCL_INIT | NCCL_NET, "GIN/Plugin: Disabling external plugins: %s", names);
-  }
   return ncclSuccess;
 }
 
@@ -296,17 +296,15 @@ ncclResult_t ncclGinInit(struct ncclComm* comm) {
       if (pluginLibs[pluginIndex].state == ncclGinPluginStateEnabled) {
         bool isAssigned = false;
         NCCLCHECK(ncclGinPluginAssignToComm(comm, pluginIndex, ginContext, &isAssigned));
-        if (isAssigned) {
-          // If one external plugin is assigned to a comm, then disable all other external plugins
-          ncclGinPluginDisableOtherExternal(pluginIndex);
-          initialized = true;
-          break;
+        if (!isAssigned) {
+          NCCLCHECK(ncclGinPluginFinalize(comm, pluginIndex, ginContext));
         } else {
-          ncclGinPluginFinalize(comm, pluginIndex, ginContext);
+          initialized = true;
         }
       }
     }
   }
+
   if (!initialized) INFO(NCCL_INIT | NCCL_NET, "GIN/Plugin: Failed to initialize any GIN plugin");
   return ncclSuccess;
 }
@@ -328,4 +326,59 @@ ncclResult_t ncclGinGetDevCount(int pluginIndex, int* nPhysDevs, int* nVirtDevs)
 fail:
   WARN("trying to access the number of devices of an uninitialized ginPlugin[%d]", pluginIndex);
   return ncclInternalError;
+}
+
+static int ncclGetBackendPriority(struct ncclGinBackendState* backend) {
+  // Current priority is GDAKI > Proxy > GPI.
+  // Lower number higher priority
+  switch (backend->ginType) {
+  case NCCL_GIN_TYPE_GDAKI:
+    return 0;
+  case NCCL_GIN_TYPE_PROXY:
+    return 1;
+  case NCCL_GIN_TYPE_GPI:
+    return 2;
+  default:
+    return INT_MAX;
+  }
+}
+
+static int ncclCompareBackendPriority(const void* a, const void* b) {
+  struct ncclGinBackendState* backend_a = (struct ncclGinBackendState*)a;
+  struct ncclGinBackendState* backend_b = (struct ncclGinBackendState*)b;
+
+  int priority_a = ncclGetBackendPriority(backend_a);
+  int priority_b = ncclGetBackendPriority(backend_b);
+
+  if (priority_a < priority_b) {
+    return -1;
+  }
+  if (priority_a > priority_b) {
+    return 1;
+  }
+  return 0;
+}
+
+ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitMask) {
+  struct ncclGinState* ginState = &comm->sharedRes->ginState;
+  int initialNumActiveBackends = ginState->numActiveBackends;
+  int currentNumActiveBackends = 0;
+  std::lock_guard<std::mutex> lock(pluginMutex);
+
+  // Close ALL non-global backends and compact the array
+  for (int i = 0; i < initialNumActiveBackends; i++) {
+    struct ncclGinBackendState* backend = &ginState->backends[i];
+    if (!(BIT(backend->ginType) & globalBitMask)) {
+      WARN("GIN backend type %d not supported on all ranks, removing from active backends", backend->ginType);
+      NCCLCHECK(ncclGinPluginFinalize(comm, backend->pluginIndex, backend->ginInstance));
+    } else {
+      ginState->backends[currentNumActiveBackends++] = *backend;
+    }
+  }
+  ginState->numActiveBackends = currentNumActiveBackends;
+  ginState->supported = currentNumActiveBackends > 0;
+
+  qsort(ginState->backends, ginState->numActiveBackends, sizeof(struct ncclGinBackendState),
+        ncclCompareBackendPriority);
+  return ncclSuccess;
 }

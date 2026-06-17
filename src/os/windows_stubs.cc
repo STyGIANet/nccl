@@ -536,6 +536,12 @@ ncclResult_t ncclGinFinalize(struct ncclComm* comm) {
   return ncclSuccess;
 }
 
+ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask) {
+  (void)comm;
+  (void)globalBitmask;
+  return ncclSuccess;
+}
+
 /* --------------------------------------------------------------------------
  * RMA stubs
  * -------------------------------------------------------------------------- */
