@@ -68,6 +68,9 @@ extern thread_local ncclProfilerApiState_t ncclProfilerApiState;
 
 extern int ncclProfilerEventMask;
 
+// Out-of-band (RAS) override of the event mask; see profiler.cc.
+void ncclProfilerSetRasOverride(int mask);
+
 // Plugin Init/Finalize Wrappers
 ncclResult_t ncclProfilerPluginInit(struct ncclComm* comm);
 ncclResult_t ncclProfilerPluginFinalize(struct ncclComm* comm);

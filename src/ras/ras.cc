@@ -16,6 +16,7 @@
 #include "diagnostics.h"
 #include "nccl.h"
 #include "param/param.h"
+#include "profiler.h"
 #include "utils.h"
 #include "ras_internal.h"
 #include "os.h"
@@ -575,6 +576,16 @@ void rasMsgHandleBCDeadPeer(struct rasCollRequest** pReq, size_t* pReqLen, bool*
     // No point in re-broadcasting what's already known.
     *pDone = true;
   }
+}
+
+// Handles the profilerMask broadcast.
+void rasMsgHandleBCProfilerMask(struct rasCollRequest** pReq, size_t* pReqLen, bool* pDone) {
+  INFO(NCCL_RAS, "RAS handling profilerMask (mask 0x%x)", (*pReq)->profilerMask.eventMask);
+  *pReqLen = rasCollDataLength(RAS_BC_PROFILER_MASK);
+  ncclProfilerSetRasOverride((*pReq)->profilerMask.eventMask);
+  // A mask value has no "already known" terminal state, so keep propagating to every peer; the
+  // rootAddr/rootId history still bounds the broadcast.
+  *pDone = false;
 }
 
 // Attempts to immediately send a fatal NACK connInitAck response to a socket.  A bit of a hack (as it doesn't

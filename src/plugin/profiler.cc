@@ -265,6 +265,11 @@ static double proxyOpRecordTs[2], proxyStepRecordTs[2], proxyCtrlRecordTs[2];
 
 int ncclProfilerEventMask;       // Set by profiler
 
+// RAS out-of-band override of the event mask; re-applied at the end of ncclProfilerPluginInit so a new
+// comm's plugin init() cannot clobber a mask set job-wide via the RAS client.
+static bool ncclProfilerRasOverrideActive = false;
+static int ncclProfilerRasOverrideMask = 0;
+
 // Print enabled profiler event types
 static void printProfilerEventMask(int mask) {
   if (!mask) return;
@@ -289,6 +294,19 @@ static void printProfilerEventMask(int mask) {
   INFO(NCCL_INIT, "Profiler event mask: 0x%x (%d) - Enabled: %s", mask, mask, enabled);
 }
 
+void ncclProfilerSetRasOverride(int mask) {
+  // Store the 'active' flag (release) LAST, pairing with the acquire-load in ncclProfilerPluginInit so both
+  // mask writes are visible there.
+  COMPILER_ATOMIC_STORE(&ncclProfilerEventMask, mask, std::memory_order_relaxed);
+  COMPILER_ATOMIC_STORE(&ncclProfilerRasOverrideMask, mask, std::memory_order_relaxed);
+  COMPILER_ATOMIC_STORE(&ncclProfilerRasOverrideActive, true, std::memory_order_release);
+  // Override is recorded above regardless; only log the decoded mask when a plugin is loaded.
+  if (ncclProfiler != NULL) {
+    INFO(NCCL_INIT, "Profiler event mask set out-of-band via RAS:");
+    printProfilerEventMask(mask);
+  }
+}
+
 ncclResult_t ncclProfilerPluginInit(struct ncclComm* comm) {
   TIME_START_EVENT(elapsed);
   TIME_START_EVENT(init);
@@ -302,6 +320,13 @@ ncclResult_t ncclProfilerPluginInit(struct ncclComm* comm) {
     }
 
     printProfilerEventMask(ncclProfilerEventMask);
+  }
+  // Re-apply any RAS override: the plugin's init() above rewrites the mask unconditionally and would
+  // otherwise clobber a value set job-wide via the RAS client.
+  if (COMPILER_ATOMIC_LOAD(&ncclProfilerRasOverrideActive, std::memory_order_acquire)) {
+    int mask = COMPILER_ATOMIC_LOAD(&ncclProfilerRasOverrideMask, std::memory_order_relaxed);
+    COMPILER_ATOMIC_STORE(&ncclProfilerEventMask, mask, std::memory_order_relaxed);
+    INFO(NCCL_INIT, "Profiler event mask: re-applied RAS override 0x%x", mask);
   }
   TIME_STOP_EVENT(init);
   return ncclSuccess;

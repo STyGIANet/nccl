@@ -336,4 +336,37 @@ Monitoring mode can also be used in conjunction with JSON output:
 Unlike in the previously shown communicator output (where each rank was printed separately), here the entity of concern
 is a `process` so ``cuda_devs`` and ``nvml_devs`` need to be arrays (since a process can manage multiple GPUs).
 
+Control Commands
+----------------
+
+Starting with NCCL 2.31, RAS adds a ``CONTROL`` command namespace for adjusting NCCL behavior at run time,
+out-of-band, and consistently across the whole job.  Unlike ``STATUS`` and ``MONITOR`` (which only *read* the
+job's state), ``CONTROL`` commands *modify* the running job.
+
+The first such command toggles the NCCL profiler's event mask, so that profiling (NCCL Telemetry, NCCL
+Inspector, and other Profiler-based plugins) can be enabled or disabled dynamically, without restarting the
+job:
+
+.. code::
+
+  ncclras CONTROL PROFILER_MASK none            # disable all profiler events job-wide
+  ncclras CONTROL PROFILER_MASK coll,kernelch   # enable a subset of events
+  ncclras CONTROL PROFILER_MASK all             # enable all events
+  ncclras CONTROL PROFILER_MASK 0x42            # raw hexadecimal mask
+
+The equivalent wire-level command is ``CONTROL PROFILER_MASK <value>`` (e.g., ``echo "CONTROL PROFILER_MASK
+none" | nc localhost 28028``), to which RAS replies ``OK``.  The ``<value>``
+may be ``none``, ``all``, a hexadecimal (``0x``-prefixed) or decimal integer, or a comma-separated list of
+event names (``group``, ``coll``, ``p2p``, ``proxyop``, ``proxystep``, ``proxyctrl``, ``kernelch``,
+``netplugin``, ``groupapi``, ``collapi``, ``p2papi``, ``kernellaunch``, ``cecoll``, ``cesync``, ``cebatch``).
+
+The change is applied to the entire job: the contacted RAS thread broadcasts the new mask over the RAS
+network and every process updates its profiler event mask, taking effect as each rank receives the control
+command.  A profiler plugin must be loaded for the change to have any effect; with the mask set to ``0`` the
+plugin stays resident but no event callbacks fire, so the profiling overhead drops to near zero.
+
+The mask is sampled when NCCL work is enqueued, so the change applies to operations enqueued after it
+arrives.  Work already captured into a CUDA graph keeps the mask that was in effect at capture time until
+the graph is recaptured.
+
 .. highlight:: shell

@@ -152,6 +152,10 @@ ncclResult_t rasNetSendCollReq(const struct rasCollRequest* req, bool* pAllDone,
       bool done = false;
       rasMsgHandleBCDeadPeer(&reqMod, &reqLen, &done);
       if (done) goto exit;
+    } else if (req->type == RAS_BC_PROFILER_MASK) {
+      bool done = false;
+      rasMsgHandleBCProfilerMask(&reqMod, &reqLen, &done);
+      if (done) goto exit;
     }
   } // req->type < RAS_COLL_CONNS
 

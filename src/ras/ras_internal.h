@@ -40,6 +40,7 @@ typedef enum {
 typedef enum {
   RAS_MSG_NONE = 0,
   RAS_BC_DEADPEER = 1,
+  RAS_BC_PROFILER_MASK = 2, // Set the NCCL profiler event mask on every process (out-of-band, job-wide).
   // Broadcast operations above this line; collective operations below (1000 is the demarcation line).
   RAS_COLL_CONNS = 1001, // Collect data about all RAS connections.
   RAS_COLL_COMMS = 1002, // Collect data about all communicators.
@@ -65,6 +66,9 @@ struct rasCollRequest {
     struct {
       union ncclSocketAddress addr;
     } deadPeer;
+    struct {
+      int eventMask; // New NCCL profiler event mask to apply on every process.
+    } profilerMask;
     struct {
     } conns;
     struct {
@@ -163,6 +167,8 @@ static inline size_t rasCollDataLength(rasCollectiveType type) {
   switch (type) {
   case RAS_BC_DEADPEER:
     return offsetof(struct rasCollRequest, deadPeer) + sizeof(data->deadPeer);
+  case RAS_BC_PROFILER_MASK:
+    return offsetof(struct rasCollRequest, profilerMask) + sizeof(data->profilerMask);
   case RAS_COLL_CONNS:
     return offsetof(struct rasCollRequest, conns) + sizeof(data->conns);
   case RAS_COLL_COMMS:
@@ -544,6 +550,7 @@ ncclResult_t rasConnSendMsg(struct rasConnection* conn, int* closed, bool* allSe
 ncclResult_t rasMsgRecv(struct rasSocket* sock, struct rasMsg** msg, int* closed);
 ncclResult_t rasMsgHandle(struct rasMsg* msg, struct rasSocket* sock);
 void rasMsgHandleBCDeadPeer(struct rasCollRequest** pReq, size_t* pReqLen, bool* pDone);
+void rasMsgHandleBCProfilerMask(struct rasCollRequest** pReq, size_t* pReqLen, bool* pDone);
 ncclResult_t rasGetNewPollEntry(int* index);
 
 // rasnet.cc

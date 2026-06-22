@@ -15,6 +15,7 @@
 #include "compiler.h"
 #include "diagnostics.h"
 #include "nccl.h"
+#include "nccl_profiler.h"
 #include "utils.h"
 #include "ras_internal.h"
 
@@ -330,6 +331,56 @@ fail:
   return ret;
 }
 
+// Parses a CONTROL PROFILER_MASK value: "none", "all", a hex/decimal integer, or a comma-separated list of
+// event names.  Leaves str unmodified (tokenizes a copy) so the caller can echo it in an error message.
+static bool rasParseProfilerMask(const char* str, int* outMask) {
+  if (str == nullptr || *str == '\0') return false;
+  const int allBits = ncclProfileGroup | ncclProfileColl | ncclProfileP2p | ncclProfileProxyOp | ncclProfileProxyStep |
+                      ncclProfileProxyCtrl | ncclProfileKernelCh | ncclProfileNetPlugin | ncclProfileGroupApi |
+                      ncclProfileCollApi | ncclProfileP2pApi | ncclProfileKernelLaunch | ncclProfileCeColl |
+                      ncclProfileCeSync | ncclProfileCeBatch;
+  if (strcasecmp(str, "none") == 0) {
+    *outMask = 0;
+    return true;
+  }
+  if (strcasecmp(str, "all") == 0) {
+    *outMask = allBits;
+    return true;
+  }
+  if (str[0] >= '0' && str[0] <= '9') { // numeric: hex (0x..), decimal, or octal via base 0
+    char* endPtr = nullptr;
+    long val = strtol(str, &endPtr, 0);
+    if (!endPtr || *endPtr != '\0' || val < 0) return false;
+    *outMask = (int)val;
+    return true;
+  }
+  // Symbolic list: tokenize a local copy to keep str intact.
+  char buf[1024];
+  if (snprintf(buf, sizeof(buf), "%s", str) >= (int)sizeof(buf)) return false; // too long
+  int mask = 0;
+  char* savePtr = nullptr;
+  for (char* tok = strtok_r(buf, ",", &savePtr); tok != nullptr; tok = strtok_r(nullptr, ",", &savePtr)) {
+    if (strcasecmp(tok, "group") == 0) mask |= ncclProfileGroup;
+    else if (strcasecmp(tok, "coll") == 0) mask |= ncclProfileColl;
+    else if (strcasecmp(tok, "p2p") == 0) mask |= ncclProfileP2p;
+    else if (strcasecmp(tok, "proxyop") == 0) mask |= ncclProfileProxyOp;
+    else if (strcasecmp(tok, "proxystep") == 0) mask |= ncclProfileProxyStep;
+    else if (strcasecmp(tok, "proxyctrl") == 0) mask |= ncclProfileProxyCtrl;
+    else if (strcasecmp(tok, "kernelch") == 0) mask |= ncclProfileKernelCh;
+    else if (strcasecmp(tok, "netplugin") == 0) mask |= ncclProfileNetPlugin;
+    else if (strcasecmp(tok, "groupapi") == 0) mask |= ncclProfileGroupApi;
+    else if (strcasecmp(tok, "collapi") == 0) mask |= ncclProfileCollApi;
+    else if (strcasecmp(tok, "p2papi") == 0) mask |= ncclProfileP2pApi;
+    else if (strcasecmp(tok, "kernellaunch") == 0) mask |= ncclProfileKernelLaunch;
+    else if (strcasecmp(tok, "cecoll") == 0) mask |= ncclProfileCeColl;
+    else if (strcasecmp(tok, "cesync") == 0) mask |= ncclProfileCeSync;
+    else if (strcasecmp(tok, "cebatch") == 0) mask |= ncclProfileCeBatch;
+    else return false;
+  }
+  *outMask = mask;
+  return true;
+}
+
 // Terminates a connection with a RAS client.
 static void rasClientTerminate(struct rasClient* client) {
   rasDiagnosticsCancelTarget(client);
@@ -516,6 +567,33 @@ void rasClientEventLoop(struct rasClient* client, int pollIdx) {
             client->monitorMask = RAS_EVENT_LIFECYCLE;
           }
           strcpy(rasLine, "OK\n");
+        }
+        if (rasClientEnqueueString(client, rasLine) != ncclSuccess) {
+          rasClientTerminate(client);
+          return;
+        }
+      } else if (strncasecmp(cmd, "control ", strlen("control ")) == 0) {
+        // CONTROL namespace: out-of-band, job-wide writes, gated only by the RAS socket binding (like STATUS).
+        char* sub = cmd + strlen("control ");
+        while (*sub == ' ') sub++;
+        if (strncasecmp(sub, "profiler_mask ", strlen("profiler_mask ")) == 0) {
+          char* valStr = sub + strlen("profiler_mask ");
+          while (*valStr == ' ') valStr++;
+          int mask = 0;
+          if (rasParseProfilerMask(valStr, &mask)) {
+            // Broadcast to every process (including this one).
+            struct rasCollRequest bCast = {};
+            rasCollReqInit(&bCast);
+            bCast.timeout = client->timeout;
+            bCast.type = RAS_BC_PROFILER_MASK;
+            bCast.profilerMask.eventMask = mask;
+            (void)rasNetSendCollReq(&bCast);
+            strcpy(rasLine, "OK\n");
+          } else {
+            snprintf(rasLine, sizeof(rasLine), "ERROR: Invalid profiler mask value '%s'\n", valStr);
+          }
+        } else {
+          snprintf(rasLine, sizeof(rasLine), "ERROR: Unknown CONTROL subcommand '%s'\n", sub);
         }
         if (rasClientEnqueueString(client, rasLine) != ncclSuccess) {
           rasClientTerminate(client);

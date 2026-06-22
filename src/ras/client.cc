@@ -66,7 +66,14 @@ static void printUsage(const char* argv0) {
           "                      NCCL_RAS_TIMEOUT_FACTOR; 0 disables the timeout)\n"
           "  -v, --verbose       Increase the verbosity level of the RAS output\n"
           "      --help          Print this help and exit\n"
-          "      --version       Print the version number and exit\n", argv0);
+          "      --version       Print the version number and exit\n"
+          "\nCommands (given as positional arguments; sent to the NCCL job):\n"
+          "  CONTROL PROFILER_MASK VALUE\n"
+          "                      Enable/disable NCCL profiler events job-wide, out-of-band.\n"
+          "                      VALUE: none | all | 0xHEX | DECIMAL | name[,name...]\n"
+          "                      (names: group,coll,p2p,proxyop,proxystep,proxyctrl,kernelch,\n"
+          "                       netplugin,groupapi,collapi,p2papi,kernellaunch,cecoll,cesync,cebatch)\n"
+          "\nWith no command, the job status is printed (see --monitor for live events).\n", argv0);
   // clang-format on
 }
 
@@ -500,6 +507,39 @@ static int monitorNCCLEvents() {
   return 0;
 }
 
+// Sends the positional args as one command line and prints the reply; returns non-zero on ERROR or failure.
+static int sendCommand(int argc, char** argv) {
+  char msgBuf[4096];
+  size_t len = 0;
+  for (int i = optind; i < argc; i++) {
+    int w = snprintf(msgBuf + len, sizeof(msgBuf) - len, "%s%s", (i > optind ? " " : ""), argv[i]);
+    if (w < 0 || len + (size_t)w >= sizeof(msgBuf) - 1) {
+      fprintf(stderr, "Command too long\n");
+      return 1;
+    }
+    len += (size_t)w;
+  }
+  msgBuf[len++] = '\n';
+  msgBuf[len] = '\0';
+  if (socketWrite(sock, msgBuf, len) != (ssize_t)len) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
+    else perror("write to socket");
+    return 1;
+  }
+  ssize_t bytes = rasRead(sock, msgBuf, sizeof(msgBuf));
+  if (bytes < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
+    else perror("read socket");
+    return 1;
+  }
+  if (bytes == 0) {
+    fprintf(stderr, "NCCL unexpectedly closed the connection\n");
+    return 1;
+  }
+  fputs(msgBuf, stdout);
+  return (strncasecmp(msgBuf, "ERROR", 5) == 0) ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
   parseArgs(argc, argv);
 
@@ -512,7 +552,10 @@ int main(int argc, char** argv) {
   }
 
   int result;
-  if (monitorMode) {
+  if (optind < argc) {
+    // Positional command (e.g. CONTROL PROFILER_MASK <value>): send verbatim.
+    result = sendCommand(argc, argv);
+  } else if (monitorMode) {
     result = monitorNCCLEvents();
   } else if (diagnosticsMode) {
     result = runNCCLDiagnostics();
