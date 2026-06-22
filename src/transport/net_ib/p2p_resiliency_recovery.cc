@@ -549,7 +549,7 @@ static inline ncclResult_t ncclIbPortRecoveryQpsRestore(ncclIbPortRecoveryContex
   if (recoveryContext->resCtx->baseComm->isSend == false) {
     // Restore "Flush QP"
     ncclIbRecvComm* recvComm = (ncclIbRecvComm*)recoveryContext->resCtx->baseComm;
-    if (recvComm->flushEnabled) {
+    if (recvComm->flushEnabled && recvComm->flushQpsCreated) {
       for (int i = 0; i < recvComm->base.vProps.ndevs; i++) {
         if (i != recoveryContext->devIndex) continue;
         struct ncclIbRecvCommDev* rCommDev = &recvComm->devs[i];

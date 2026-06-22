@@ -521,6 +521,9 @@ struct ncclIbRecvComm {
   struct ncclIbRequestCompletionRecord cmplsRecords[NET_IB_MAX_REQUESTS];
   int gpuFlushHostMem;
   int flushEnabled;
+  int flushQpSl;
+  int flushQpTc;
+  bool flushQpsCreated;
   bool prepostReceiveWorkRequests;
   // To avoid allocation and memset on the data-path a single structure is used
   // and only the wr_id is updated before posting a receive work request.
@@ -600,6 +603,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, size_t size, int tag, void*
 ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int* tags, void** mhandles, void** phandles,
                          void** request);
 ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void** mhandles, void** request);
+ncclResult_t ncclIbCreateFlushQp(struct ncclIbRecvComm* comm);
 ncclResult_t ncclIbTest(void* request, int* done, int* sizes);
 ncclResult_t ncclIbCloseSend(void* sendComm);
 ncclResult_t ncclIbCloseRecv(void* recvComm);

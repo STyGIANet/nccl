@@ -770,6 +770,11 @@ ncclResult_t ncclRmaIbProxyIFlush(void* rmaCtx, int context, void* mhandle, uint
   struct ncclRmaIbProxyMrHandle* rmaMrHandle = (struct ncclRmaIbProxyMrHandle*)mhandle;
   struct ncclIbRecvComm* comm;
   NCCLCHECK(ncclRmaIbProxyGetRecvComm(rmaProxyCtx, rank, &comm));
+  if (comm->flushEnabled == 0) {
+    *request = NULL;
+    return ncclSuccess;
+  }
+  NCCLCHECK(ncclIbCreateFlushQp(comm));
   struct ncclIbQp* qp = &comm->devs[0].gpuFlush.qp;
 
   struct ncclIbRequest* req;

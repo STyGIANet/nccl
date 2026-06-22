@@ -529,6 +529,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
     if (sizes[i]) last = i;
   }
   if (comm->flushEnabled == 0 || last == -1) return ncclSuccess;
+  NCCLCHECK(ncclIbCreateFlushQp(comm));
 
   // Only flush once using the last non-zero receive
   struct ncclIbRequest* req;

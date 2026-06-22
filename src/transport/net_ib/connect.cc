@@ -1272,61 +1272,80 @@ static ncclResult_t ncclIbReceiverQpsCreateToRts(ncclIbRecvComm* rComm, struct n
     }
   }
 
+  // Flush QPs are created lazily on the first flush (see ncclIbCreateFlushQp), so
+  // here we only stash the remote-derived RTR inputs the loopback QP needs.
   if (rComm->flushEnabled) {
-    for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
-      ncclIbRecvCommDev* rCommDev = &rComm->devs[i];
-      ncclIbDev* ibDev = &ncclIbDevs[rCommDev->base.ibDevN];
-
-      struct ncclIbQpCreateAttr qpCreateAttrs;
-      memset(&qpCreateAttrs, 0, sizeof(struct ncclIbQpCreateAttr));
-      qpCreateAttrs.type = IBV_QPT_RC;
-      qpCreateAttrs.cq = rCommDev->base.cq;
-      qpCreateAttrs.pd = rCommDev->base.pd;
-      qpCreateAttrs.maxRecvWorkRequest = 0;
-      qpCreateAttrs.maxSendWorkRequest = NET_IB_MAX_REQUESTS;
-      qpCreateAttrs.qpContext = &rComm->base.stats;
-      NCCLCHECK(ncclIbQpCreate(&rCommDev->gpuFlush.qp, &qpCreateAttrs));
-      INFO(NCCL_NET,
-           "NET/IB: %s: Flush QP created: port=%d dev=%d devName=%s ndevs=%d nmdevs=%d qp_num=%u pkey=%u pd=%p",
-           __func__, ibDev->portNum, rCommDev->base.ibDevN, ncclIbDevs[rCommDev->base.ibDevN].devName, ncclNIbDevs,
-           ncclNMergedIbDevs, rCommDev->gpuFlush.qp.qp->qp_num, (uint16_t)ncclParamIbPkey(), rCommDev->base.pd);
-
-      ncclIbQp* flushQp = &rCommDev->gpuFlush.qp;
-
-      // Transition the QP to INIT state
-      struct ncclIbQpInitAttr* initAttr = &flushQp->initAttr;
-      initAttr->state = IBV_QPS_INIT;
-      initAttr->pkeyIndex = ncclParamIbPkey();
-      initAttr->portNum = ibDev->portNum;
-      initAttr->qpAccessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ;
-      NCCLCHECK(ncclIbQpInit(flushQp));
-
-      struct ncclIbQpRtrAttr* rtrAttr = &flushQp->rtrAttr;
-      rtrAttr->mtu = ibDev->portAttr.active_mtu;
-      rtrAttr->linkLayer = ibDev->portAttr.link_layer;
-      // TODO: Flush QP is a "loopback QP" (connected to itself), so it should
-      // not use any information from the remote side during configuration.
-      rtrAttr->tc = ibDev->portAttr.link_layer == IBV_LINK_LAYER_ETHERNET ? remMeta->tc : -1;
-      rtrAttr->sl = remMeta->sl;
-      rtrAttr->remoteQpNum = rCommDev->gpuFlush.qp.qp->qp_num;
-      rtrAttr->remoteLid = ibDev->portAttr.lid;
-      rtrAttr->remoteGid = rCommDev->base.gidInfo.localGid;
-      rtrAttr->localIbPort = ibDev->portNum;
-      rtrAttr->localPortFlags = ibDev->portAttr.flags;
-      rtrAttr->localGid = rCommDev->base.gidInfo.localGid;
-      rtrAttr->localGidIndex = rCommDev->base.gidInfo.localGidIndex;
-      NCCLCHECK(ncclIbQpRtr(flushQp));
-      struct ncclIbQpRtsAttr* rtsAttr = &flushQp->rtsAttr;
-      rtsAttr->timeout = ncclParamIbTimeout();
-      rtsAttr->retryCnt = ncclParamIbRetryCnt();
-      NCCLCHECK(ncclIbQpRts(flushQp));
-    }
+    rComm->flushQpSl = remMeta->sl;
+    rComm->flushQpTc = remMeta->tc;
   }
 
   if (rComm->base.resiliency) {
     NCCLCHECK(ncclIbResiliencyReceiverQpsCreateToRts(rComm->base.resiliency, remMeta, &meta->resiliencyInfo));
   }
 
+  return ncclSuccess;
+}
+
+// Build the flush QP and its host buffer on the first flush. NCCL only issues a
+// network-read flush when the topology needs one, so connections that never flush
+// never allocate these resources.
+ncclResult_t ncclIbCreateFlushQp(struct ncclIbRecvComm* comm) {
+  if (comm->flushEnabled == 0 || comm->flushQpsCreated) return ncclSuccess;
+
+  for (int i = 0; i < comm->base.vProps.ndevs; i++) {
+    ncclIbRecvCommDev* rCommDev = &comm->devs[i];
+    ncclIbDev* ibDev = &ncclIbDevs[rCommDev->base.ibDevN];
+    ncclIbQp* flushQp = &rCommDev->gpuFlush.qp;
+
+    struct ncclIbQpCreateAttr qpCreateAttrs;
+    memset(&qpCreateAttrs, 0, sizeof(struct ncclIbQpCreateAttr));
+    qpCreateAttrs.type = IBV_QPT_RC;
+    qpCreateAttrs.cq = rCommDev->base.cq;
+    qpCreateAttrs.pd = rCommDev->base.pd;
+    qpCreateAttrs.maxRecvWorkRequest = 0;
+    qpCreateAttrs.maxSendWorkRequest = NET_IB_MAX_REQUESTS;
+    qpCreateAttrs.qpContext = &comm->base.stats;
+    NCCLCHECK(ncclIbQpCreate(flushQp, &qpCreateAttrs));
+    INFO(NCCL_NET, "NET/IB: %s: Flush QP created: port=%d dev=%d devName=%s ndevs=%d nmdevs=%d qp_num=%u pkey=%u pd=%p",
+         __func__, ibDev->portNum, rCommDev->base.ibDevN, ncclIbDevs[rCommDev->base.ibDevN].devName, ncclNIbDevs,
+         ncclNMergedIbDevs, flushQp->qp->qp_num, (uint16_t)ncclParamIbPkey(), rCommDev->base.pd);
+
+    struct ncclIbQpInitAttr* initAttr = &flushQp->initAttr;
+    initAttr->state = IBV_QPS_INIT;
+    initAttr->pkeyIndex = ncclParamIbPkey();
+    initAttr->portNum = ibDev->portNum;
+    initAttr->qpAccessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ;
+    NCCLCHECK(ncclIbQpInit(flushQp));
+
+    // The flush QP is a loopback QP (connected to itself), so the "remote" target is
+    // this same QP on the local port; only sl/tc come from the peer metadata.
+    struct ncclIbQpRtrAttr* rtrAttr = &flushQp->rtrAttr;
+    rtrAttr->mtu = ibDev->portAttr.active_mtu;
+    rtrAttr->linkLayer = ibDev->portAttr.link_layer;
+    rtrAttr->tc = ibDev->portAttr.link_layer == IBV_LINK_LAYER_ETHERNET ? comm->flushQpTc : -1;
+    rtrAttr->sl = comm->flushQpSl;
+    rtrAttr->remoteQpNum = flushQp->qp->qp_num;
+    rtrAttr->remoteLid = ibDev->portAttr.lid;
+    rtrAttr->remoteGid = rCommDev->base.gidInfo.localGid;
+    rtrAttr->localIbPort = ibDev->portNum;
+    rtrAttr->localPortFlags = ibDev->portAttr.flags;
+    rtrAttr->localGid = rCommDev->base.gidInfo.localGid;
+    rtrAttr->localGidIndex = rCommDev->base.gidInfo.localGidIndex;
+    NCCLCHECK(ncclIbQpRtr(flushQp));
+
+    struct ncclIbQpRtsAttr* rtsAttr = &flushQp->rtsAttr;
+    rtsAttr->timeout = ncclParamIbTimeout();
+    rtsAttr->retryCnt = ncclParamIbRetryCnt();
+    NCCLCHECK(ncclIbQpRts(flushQp));
+
+    NCCLCHECK(wrap_ibv_reg_mr(&rCommDev->gpuFlush.hostMr, rCommDev->base.pd, &comm->gpuFlushHostMem, sizeof(int),
+                              IBV_ACCESS_LOCAL_WRITE));
+    rCommDev->gpuFlush.sge.addr = (uint64_t)&comm->gpuFlushHostMem;
+    rCommDev->gpuFlush.sge.length = 1;
+    rCommDev->gpuFlush.sge.lkey = rCommDev->gpuFlush.hostMr->lkey;
+  }
+
+  comm->flushQpsCreated = true;
   return ncclSuccess;
 }
 
@@ -1589,16 +1608,6 @@ ib_recv:
   for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
     rCommDev = rComm->devs + i;
     ibDev = ncclIbDevs + rCommDev->base.ibDevN;
-
-    // Allocate Flush dummy buffer for GPU Direct RDMA
-    if (rComm->flushEnabled) {
-      NCCLCHECKGOTO(wrap_ibv_reg_mr(&rCommDev->gpuFlush.hostMr, rCommDev->base.pd, &rComm->gpuFlushHostMem, sizeof(int),
-                                    IBV_ACCESS_LOCAL_WRITE),
-                    ret, fail);
-      rCommDev->gpuFlush.sge.addr = (uint64_t)&rComm->gpuFlushHostMem;
-      rCommDev->gpuFlush.sge.length = 1;
-      rCommDev->gpuFlush.sge.lkey = rCommDev->gpuFlush.hostMr->lkey;
-    }
 
     // Fill Handle
     meta.devs[i].lid = ibDev->portAttr.lid;
