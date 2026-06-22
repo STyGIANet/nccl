@@ -14,6 +14,7 @@
 #include "../coop.h"
 #include <cassert>
 #include <cstdint>
+#include <type_traits>
 #if defined(__CUDA_FP8_TYPES_EXIST__)
 #include <cuda_fp8.h>
 #endif
@@ -387,6 +388,10 @@ template <typename Y, typename X, int n>
 NCCL_DEVICE_INLINE EltPack<Y, n> castPack(EltPack<X, n> x) {
   static_assert((n & (n - 1)) == 0, "EltPack requires power-of-two element count");
 
+  if NCCL_IF_CONSTEXPR (std::is_same<X, Y>::value) {
+    return x;
+  }
+
   PackAccess<X, n> in;
   PackAccess<Y, n> out;
   in.pack = x;
@@ -730,18 +735,12 @@ template <template <typename> typename Red, typename T, int n>
 NCCL_DEVICE_INLINE EltPack<T, n> reducePack(Red<T> const& red, EltPack<T, n> a, EltPack<T, n> b) {
   static_assert((n & (n - 1)) == 0, "EltPack requires power-of-two element count");
 
-  PackAccess<T, n> aa;
-  PackAccess<T, n> bb;
-  PackAccess<T, n> out;
-  aa.pack = a;
-  bb.pack = b;
-  if NCCL_IF_CONSTEXPR (n == 1) {
-    out.pack.elts()[0] = red(aa.pack.elts()[0], bb.pack.elts()[0]);
-  } else {
-    out.lo = reducePack(red, aa.lo, bb.lo);
-    out.hi = reducePack(red, aa.hi, bb.hi);
+  EltPack<T, n> out;
+  NVCC_PRAGMA_UNROLL(n)
+  for (int i = 0; i < n; i++) {
+    out.elts()[i] = red(a.elts()[i], b.elts()[i]);
   }
-  return out.pack;
+  return out;
 }
 
 // Specialization for zero-sized packs

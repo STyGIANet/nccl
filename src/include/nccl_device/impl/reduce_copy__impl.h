@@ -20,8 +20,6 @@
 namespace nccl {
 namespace utility {
 
-// Helper Functions
-
 // Core Loop Implementation
 
 template <int UNROLL_PACKS, int UNROLL_SOURCE, typename T, typename Pack, typename RedOp, typename IntCount,
@@ -257,38 +255,12 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoopCore(Coop coop, SrcLambda srcLambda, i
       coop, srcLambda, 1, dstLambda, nDst, redOp, totalPacks, basePackIdx);
   } else {
     if (nSrc >= 4 && nSrc % 4 == 0) {
-      constexpr int UNROLL_DIV4 = UNROLL_PACKS / 4;
-      if NCCL_IF_CONSTEXPR (UNROLL_DIV4 > 0) {
-        // only needed for dead-code instantiation
-        constexpr int UNROLL_DIV4_SAFE = (UNROLL_DIV4 > 0) ? UNROLL_DIV4 : 1;
-        return reduceCopyLoopCoreImpl<UNROLL_DIV4_SAFE, /*nSrc=*/4, T, Pack, RedOp, IntCount, Coop, srcMultimem,
-                                      dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
-          coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
-      }
+      return reduceCopyLoopCoreImpl<UNROLL_PACKS, /*nSrc=*/4, T, Pack, RedOp, IntCount, Coop, srcMultimem,
+                                    dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
+        coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
     }
-    // NOTE: nSrc % 3 and nSrc % 2 specializations marginally improve performance,
-    // but significantly increase build time due to extra template instantiations.
-    // Keep them disabled unless performance data warrants the extra compile cost.
-    // if (nSrc >= 3 && nSrc % 3 == 0) {
-    //   constexpr int UNROLL_DIV3 = UNROLL_PACKS / 3;
-    //   if NCCL_IF_CONSTEXPR (UNROLL_DIV3 > 0) {
-    //     constexpr int UNROLL_DIV3_SAFE = (UNROLL_DIV3 > 0) ? UNROLL_DIV3 : 1;  // only needed for dead-code
-    //                                                                            // instantiation
-    //     return reduceCopyLoopCoreImpl<UNROLL_DIV3_SAFE, /*nSrc=*/3, T, Pack, RedOp, IntCount, Coop, srcMultimem,
-    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
-    //         coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
-    //   }
-    // }
-    // if (nSrc >= 2 && nSrc % 2 == 0) {
-    //   constexpr int UNROLL_DIV2 = UNROLL_PACKS / 2;
-    //   if NCCL_IF_CONSTEXPR (UNROLL_DIV2 > 0) {
-    //     constexpr int UNROLL_DIV2_SAFE = (UNROLL_DIV2 > 0) ? UNROLL_DIV2 : 1;  // only needed for dead-code
-    //                                                                            // instantiation
-    //     return reduceCopyLoopCoreImpl<UNROLL_DIV2_SAFE, /*nSrc=*/2, T, Pack, RedOp, IntCount, Coop, srcMultimem,
-    //                                   dstMultimem, SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
-    //         coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
-    //   }
-    // }
+    // NOTE: nSrc % 3 and nSrc % 2 specializations add code to this runtime-dispatched device function. Keep them
+    // disabled unless performance data warrants the extra compile/code size cost.
     return reduceCopyLoopCoreImpl<UNROLL_PACKS, /*nSrc=*/1, T, Pack, RedOp, IntCount, Coop, srcMultimem, dstMultimem,
                                   SrcLambda, DstLambda, CHECK_BOUNDS, /*singleSrc=*/false>(
       coop, srcLambda, nSrc, dstLambda, nDst, redOp, totalPacks, basePackIdx);
@@ -305,7 +277,7 @@ struct ReduceCopyLoopParams {
   IntCount remainingPacks;  // Number of packs in checked round
   IntCount processedElts;  // Number of elements processed (full packs only)
 
-  NCCL_DEVICE_INLINE ReduceCopyLoopParams(IntCount count, int coopSize, int stride, int nSrc) {
+  NCCL_DEVICE_INLINE ReduceCopyLoopParams(IntCount count, int coopSize, int stride) {
     if NCCL_IF_CONSTEXPR (Pack::Count > 0) {
       totalPacks = safeDiv<IntCount>(count, Pack::Count);
     } else {
@@ -313,21 +285,6 @@ struct ReduceCopyLoopParams {
     }
 
     effectiveUnrollPacks = UNROLL_PACKS;
-    if (nSrc >= 4 && nSrc % 4 == 0) {
-      if NCCL_IF_CONSTEXPR (UNROLL_PACKS / 4 > 0) {
-        effectiveUnrollPacks = UNROLL_PACKS / 4;
-      }
-    }
-    // NOTE: Keep nSrc % 3 and nSrc % 2 unrolls disabled (see note above).
-    // else if (nSrc >= 3 && nSrc % 3 == 0) {
-    //   if NCCL_IF_CONSTEXPR (UNROLL_PACKS / 3 > 0) {
-    //     effectiveUnrollPacks = UNROLL_PACKS / 3;
-    //   }
-    // } else if (nSrc >= 2 && nSrc % 2 == 0) {
-    //   if NCCL_IF_CONSTEXPR (UNROLL_PACKS / 2 > 0) {
-    //     effectiveUnrollPacks = UNROLL_PACKS / 2;
-    //   }
-    // }
 
     // Compute packs per iteration: numGroups * (stride * UNROLL_PACKS)
     const int numGroups = (coopSize + stride - 1) / stride;
@@ -356,7 +313,7 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoop(Coop coop, SrcLambda srcLambda, int n
   const int stride = (defaultStride != 0) ? defaultStride : min(coopSize, warpSize);
 
   // Calculate loop parameters
-  ReduceCopyLoopParams<UNROLL_PACKS, Pack, IntCount> params(count, coopSize, stride, nSrc);
+  ReduceCopyLoopParams<UNROLL_PACKS, Pack, IntCount> params(count, coopSize, stride);
   if (params.totalPacks == 0) {
     return 0;
   }

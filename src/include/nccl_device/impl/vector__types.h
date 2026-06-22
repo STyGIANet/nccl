@@ -37,14 +37,17 @@ struct EltPack {
   static constexpr int Bytes = n * static_cast<int>(sizeof(T));
   // Impose most generous alignment possible (greatest pow2 factor)
   static constexpr int Alignment = (Bytes & -Bytes);
-  alignas(Alignment) char bytes[Bytes];
+  union {
+    alignas(Alignment) char bytes[Bytes];
+    T values[n];
+  };
 
   // Element access via reinterpret_cast
   NCCL_DEVICE_INLINE T* elts() {
-    return reinterpret_cast<T*>(bytes);
+    return values;
   }
   NCCL_DEVICE_INLINE const T* elts() const {
-    return reinterpret_cast<const T*>(bytes);
+    return values;
   }
 };
 
