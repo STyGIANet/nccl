@@ -385,23 +385,36 @@ struct PackAccess<T, 0> {
 // Cast pack from element type X to element type Y
 // Works with EltPack types
 template <typename Y, typename X, int n>
+NCCL_DEVICE_INLINE EltPack<Y, n> castPack(EltPack<X, n> x);
+
+template <typename Y, typename X, int n, bool SameType = std::is_same<X, Y>::value>
+struct CastPackImpl {
+  NCCL_DEVICE_INLINE static EltPack<Y, n> run(EltPack<X, n> x) {
+    PackAccess<X, n> in;
+    PackAccess<Y, n> out;
+    in.pack = x;
+    if NCCL_IF_CONSTEXPR (n == 1) {
+      out.pack.elts()[0] = static_cast<Y>(in.pack.elts()[0]);
+    } else {
+      out.lo = castPack<Y>(in.lo);
+      out.hi = castPack<Y>(in.hi);
+    }
+    return out.pack;
+  }
+};
+
+template <typename Y, typename X, int n>
+struct CastPackImpl<Y, X, n, true> {
+  NCCL_DEVICE_INLINE static EltPack<Y, n> run(EltPack<X, n> x) {
+    return x;
+  }
+};
+
+template <typename Y, typename X, int n>
 NCCL_DEVICE_INLINE EltPack<Y, n> castPack(EltPack<X, n> x) {
   static_assert((n & (n - 1)) == 0, "EltPack requires power-of-two element count");
 
-  if NCCL_IF_CONSTEXPR (std::is_same<X, Y>::value) {
-    return x;
-  }
-
-  PackAccess<X, n> in;
-  PackAccess<Y, n> out;
-  in.pack = x;
-  if NCCL_IF_CONSTEXPR (n == 1) {
-    out.pack.elts()[0] = static_cast<Y>(in.pack.elts()[0]);
-  } else {
-    out.lo = castPack<Y>(in.lo);
-    out.hi = castPack<Y>(in.hi);
-  }
-  return out.pack;
+  return CastPackImpl<Y, X, n>::run(x);
 }
 
 // Specialization for zero-sized packs
