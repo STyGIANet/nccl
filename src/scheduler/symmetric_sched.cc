@@ -63,6 +63,17 @@ void convertCollTaskToSymmetricTask(struct ncclComm* comm, struct ncclTaskColl* 
   }
 }
 
+// Match device deep-tier gate: uint32_t(input.offset - output.offset) % 16 == 0.
+static bool symBatchAligned16B(struct ncclTaskColl* headTask) {
+  for (struct ncclTaskColl* t = headTask; t != nullptr; t = t->isSymLast ? nullptr : t->next) {
+    size_t inputOff = t->sendWin ? (uintptr_t)t->sendbuff - (uintptr_t)t->sendWin->userPtr : (uintptr_t)t->sendbuff;
+    size_t outputOff = t->recvWin ? (uintptr_t)t->recvbuff - (uintptr_t)t->recvWin->userPtr : (uintptr_t)t->recvbuff;
+    if (uint32_t(inputOff - outputOff) % 16 != 0) return false;
+    if (t->isSymLast) break;
+  }
+  return true;
+}
+
 ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskColl* task,
                                        struct ncclIntruQueue<struct ncclTaskColl, &ncclTaskColl::next>* symTaskQueue,
                                        struct ncclTaskColl** remainTasksHead) {
@@ -156,6 +167,7 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
       input.countMax = countMax;
       input.nWorks = nWorks;
       input.winRegType = headTask->winRegType;
+      input.symAligned16B = symBatchAligned16B(headTask);
       NCCLCHECK(ncclGetCollNetSupport(comm, headTask, &input.collNetSupport));
       NCCLCHECK(ncclGetRegBuff(comm, headTask, &input.regBuff));
       struct ncclTuningResult_t bestTuning = NCCL_TUNING_RESULT_INIT;

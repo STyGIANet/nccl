@@ -20,6 +20,7 @@
 #include "scheduler.h"
 #include "compiler.h"
 #include "rma/rma.h"
+#include "sym_kernels.h"
 
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
@@ -28,6 +29,17 @@
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
+
+// Higher CE threshold for AllGather since TMA kernels continue to perform better till higher message sizes.
+static int64_t symCeAllGatherThreshold(struct ncclComm* comm) {
+  int64_t threshold = ncclParamSymCeThreshold();
+  const char* env = ncclGetEnv("NCCL_SYM_CE_THRESHOLD");
+  if (env == nullptr || strlen(env) == 0) {
+    bool useMcSync = comm->symkState.hasLsaMultimem;
+    if (!useMcSync && comm->minCompCap >= 100 && ncclSymkTmaAvailable(comm)) threshold *= 4;
+  }
+  return threshold;
+}
 
 // Returns maximum kernel stack size of all CUDA kernels
 ncclResult_t ncclInitKernelsForDevice(int cudaArch, int maxSharedMem, size_t* maxStackSize) {
@@ -2986,8 +2998,8 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
           NCCLCHECK(p2pTaskAppend(comm, info, ncclFuncRecv, collAPI, (void*)info->recvbuff, info->count, info->datatype,
                                   info->root, allowUB));
         } else if (ceAvailable && comm->symmetricSupport && info->coll == ncclFuncAllGather &&
-                   info->count > ncclParamSymCeThreshold() && comm->minCompCap >= 100 && comm->isAllDirectNvlink) {
-          // Use CE for Allgather on Blackwell with size > 8MB
+                   info->count > symCeAllGatherThreshold(comm) && comm->minCompCap >= 100 && comm->isAllDirectNvlink) {
+          // Use CE for AllGather on Blackwell when size exceeds sym CE threshold
           NCCLCHECK(ceCollTaskAppend(comm, info, sendWin, recvWin, opDev));
         } else {
           NCCLCHECK(collTaskAppend(comm, info, opDev));

@@ -188,13 +188,11 @@ static __device__ void bcast(ncclSymkArgsHandler const& handler, int tn, int t, 
   nPreBytes = min((size_t)nPreBytes, nBytes);
   uintptr_t cursor = nPreBytes;
 
-  constexpr int MinWarpPerBlock = 4;
-
 #if __CUDA_ARCH__ >= 1000
   if NCCL_IF_CONSTEXPR (EnableTma) {
     if (alignment % 256 == 0) {
-      constexpr int BytePerPack = 16, UnrollPacks = 16, UnrollPeers = 2;
-      constexpr int BytePerChunk = MinWarpPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
+      constexpr int BytePerPack = ncclSymkBytePerPack, UnrollPacks = ncclSymkAlign256BDeepUnrollPacks, UnrollPeers = 2;
+      constexpr int BytePerChunk = ncclSymkAlign256BDeepBytePerChunk;
       uint32_t chunks = (nBytes - cursor) / BytePerChunk;
       chunks -= imodFast32(chunks, nBlocks, nBlocks_rcp32);
       if (chunks != 0) {
@@ -202,7 +200,7 @@ static __device__ void bcast(ncclSymkArgsHandler const& handler, int tn, int t, 
         bcastDeep<BytePerPack, UnrollPacks, UnrollPeers, EnableTma>(handler, tn, t, waitNeeded, bar,
                                                                     (ncclSymPtr<char>)input + cursor,
                                                                     (ncclSymPtr<char>)output + cursor, inPlace,
-                                                                    chunks * MinWarpPerBlock);
+                                                                    chunks * ncclSymkMinWarpsPerBlock);
         cursor = cursorAfter;
         waitNeeded = false;
       }
@@ -211,8 +209,8 @@ static __device__ void bcast(ncclSymkArgsHandler const& handler, int tn, int t, 
 #endif
 
   if (alignment % 16 == 0) {
-    constexpr int BytePerPack = 16, UnrollPacks = 4, UnrollPeers = 2;
-    constexpr int BytePerChunk = MinWarpPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
+    constexpr int BytePerPack = ncclSymkBytePerPack, UnrollPacks = ncclSymkUnrollPacks, UnrollPeers = 2;
+    constexpr int BytePerChunk = ncclSymkBytePerChunk;
     uint32_t chunks = (nBytes - cursor) / BytePerChunk;
     chunks -= imodFast32(chunks, nBlocks, nBlocks_rcp32);
     if (chunks != 0) {
@@ -220,7 +218,7 @@ static __device__ void bcast(ncclSymkArgsHandler const& handler, int tn, int t, 
       bcastDeep<BytePerPack, UnrollPacks, UnrollPeers, EnableTma>(handler, tn, t, waitNeeded, bar,
                                                                   (ncclSymPtr<char>)input + cursor,
                                                                   (ncclSymPtr<char>)output + cursor, inPlace,
-                                                                  chunks * MinWarpPerBlock);
+                                                                  chunks * ncclSymkMinWarpsPerBlock);
       cursor = cursorAfter;
       waitNeeded = false;
     }
@@ -228,14 +226,14 @@ static __device__ void bcast(ncclSymkArgsHandler const& handler, int tn, int t, 
 
   if (sizeof(T) == 4 || (sizeof(T) < 4 && alignment % 4 == 0)) {
     constexpr int BytePerPack = 4, UnrollPacks = 4, UnrollPeers = 4;
-    constexpr int BytePerChunk = MinWarpPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
+    constexpr int BytePerChunk = ncclSymkMinWarpsPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
     uint32_t chunks = (nBytes - cursor) / BytePerChunk;
     chunks -= imodFast32(chunks, nBlocks, nBlocks_rcp32);
     if (chunks != 0) {
       uintptr_t cursorAfter = cursor + uintptr_t(chunks) * BytePerChunk;
       bcastDeep<(sizeof(T) <= BytePerPack ? BytePerPack : 0), UnrollPacks, UnrollPeers, false>(
         handler, tn, t, waitNeeded, bar, (ncclSymPtr<char>)input + cursor, (ncclSymPtr<char>)output + cursor, inPlace,
-        chunks * MinWarpPerBlock);
+        chunks * ncclSymkMinWarpsPerBlock);
       cursor = cursorAfter;
       waitNeeded = false;
     }

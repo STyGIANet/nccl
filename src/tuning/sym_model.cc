@@ -23,6 +23,7 @@ static const float nvlinkBws[NCCL_NVLINK_BW_IDX_NUM] = {
   360.0f, // Hopper
   720.0f, // Blackwell
 };
+static constexpr float disableTime = 1.e30f;
 
 double ncclTuningGetLsaBw(struct ncclComm* comm) {
   int compCapIndex = comm->minCompCap >= 100 ? NCCL_NVLINK_BW_IDX_BLACKWELL : NCCL_NVLINK_BW_IDX_HOPPER;
@@ -221,9 +222,11 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
     busBytes = (nRanks - 1) * nBytes;
     break;
   case ncclSymkKernelId_AllGather_TmaSTMC:
+    busMultiplier = 0.99;
+    // fall through
   case ncclSymkKernelId_AllGather_STMC:
     busBytes = (nRanks - 1) * nBytes; // Wrong. Should be nRanks*nBytes but we want to beat non-MC.
-    busMultiplier = 0.55 * nRanks;
+    busMultiplier *= 0.55 * nRanks;
     nMaxBlocks = nMaxBlocksNvls;
     break;
 
@@ -241,15 +244,11 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
     break;
   }
 
-  nMaxBlocks = std::min<int>(nMaxBlocks, comm->config.maxCTAs);
-  int nMinBlocks = comm->config.minCTAs;
-
-  int nUserCTAs = std::min<int>(ncclSymkMaxBlocks, ncclParamSymCTAs());
-  if (nUserCTAs > 0) nMinBlocks = nMaxBlocks = nUserCTAs;
-
+  bool isTma = ncclSymkTmaKernelMask() >> k & 1;
   bool isLL = ncclSymkLLKernelMask() >> k & 1;
   bool isAG = ncclSymkAGKernelMask() >> k & 1;
   bool isAR = ncclSymkARKernelMask() >> k & 1;
+  bool isRS = ncclSymkRSKernelMask() >> k & 1;
   constexpr double GBps = (1 << 30) / 1.e6;
   double baseLat, smBw, peakBw;
   if (comm->cudaArch < 1000) {
@@ -257,14 +256,48 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
     smBw = isAR ? 65 * GBps : 44 * GBps;
     peakBw = k == ncclSymkKernelId_AllReduce_RSxLDMC_AGxSTMC ? 480 * GBps : 320 * GBps;
   } else {
-    baseLat = isLL ? (isAG ? 8.5 : 11) : (isAR ? 19.5 : 13.0);
+    baseLat = isLL ? (isAG ? 8.5 : 10.5) : (isAR ? 19.5 : 13.0);
     smBw = 55 * GBps;
     peakBw = k == ncclSymkKernelId_AllReduce_RSxLDMC_AGxSTMC ? 1000 * GBps : 600 * GBps;
+    if (isRS) peakBw = 650 * GBps;
+    if (isTma) {
+      baseLat += 4.0;
+      if (k == ncclSymkKernelId_AllGather_TmaST) {
+        peakBw = 700 * GBps;
+        baseLat += 19.0; // This is for optimal CTA and kernel selection.
+      }
+      if (k != ncclSymkKernelId_AllGather_TmaSTMC) peakBw *= 1.07;
+    }
   }
+
+  nMaxBlocks = std::min<int>(nMaxBlocks, comm->config.maxCTAs);
+  int nMinBlocks = comm->config.minCTAs;
+  int nUserCTAs = std::min<int>(ncclSymkMaxBlocks, ncclParamSymCTAs());
+  if (nUserCTAs > 0) nMinBlocks = nMaxBlocks = nUserCTAs;
+
+  // Even CTA counts are preferred for optimal performance, except for when CTAs==1
+  if (nMinBlocks != nMaxBlocks) {
+    if (nMinBlocks != 1) nMinBlocks = roundUp(nMinBlocks, 2);
+    if (nMaxBlocks != 1) nMaxBlocks = roundDown(nMaxBlocks, 2);
+  }
+
+  // Only use TMA if the selected CTA count is able to take advantage of the TMA fast paths.
+  if (isTma) {
+    while (nMinBlocks <= nMaxBlocks && ncclSymkTmaDeepEligible(comm, k, nBytes, nMinBlocks)) {
+      nMinBlocks += (nMinBlocks == 1 ? 1 : 2);
+    }
+    while (nMaxBlocks > nMinBlocks && ncclSymkTmaDeepEligible(comm, k, nBytes, nMaxBlocks)) {
+      nMaxBlocks -= (nMaxBlocks == 2 ? 1 : 2);
+    }
+    if (nMinBlocks > nMaxBlocks) {
+      *timeUs = disableTime;
+      return;
+    }
+  }
+
   *nBlocks = nMaxBlocks;
   *timeUs = model(busBytes, baseLat, nMaxBlocks, smBw, busMultiplier, peakBw);
-  // Use least number of blocks that puts us within a tolerance of peak performance.
-  for (int bn = nMinBlocks; bn < nMaxBlocks; bn++) {
+  for (int bn = nMinBlocks; bn < nMaxBlocks; bn += (bn == 1) ? 1 : 2) {
     double time = model(busBytes, baseLat, bn, smBw, busMultiplier, peakBw);
     if (time <= 1.025 * (*timeUs)) {
       *nBlocks = bn;
@@ -290,7 +323,8 @@ ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const inputs, stru
   }
 
   uint32_t tuning_kmask = (1 << tuning->symKernelId);
-  uint32_t valid_kmask = ncclSymkMask(inputs->comm, inputs->func, inputs->devRedOp, inputs->datatype, inputs->countMax);
+  uint32_t valid_kmask = ncclSymkMask(inputs->comm, inputs->func, inputs->devRedOp, inputs->datatype, inputs->countMax,
+                                      inputs->symAligned16B);
   if ((tuning_kmask & valid_kmask) == 0) {
     tuning->valid = 0;
     tuning->timeUs = -1.0;

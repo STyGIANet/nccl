@@ -343,18 +343,16 @@ static __device__ void allreduce(ncclSymkArgsHandler const& handler, int tn, int
   nPreBytes = min((size_t)nPreBytes, nBytes);
   uintptr_t cursor = nPreBytes;
 
-  constexpr int MinWarpPerBlock = 4;
-
   if ((input.offset - output.offset) % 16 == 0) {
-    constexpr int BytePerPack = 16,
+    constexpr int BytePerPack = ncclSymkBytePerPack,
                   UnrollPacks =
 #if __CUDA_ARCH__ >= 1000
-                    EnableTma ? 8 :
+                    EnableTma ? ncclSymkDeepUnrollPacks :
 #endif
-                                4,
+                                ncclSymkUnrollPacks,
                   UnrollPeers = 2;
 
-    constexpr int BytePerChunk = MinWarpPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
+    constexpr int BytePerChunk = EnableTma ? ncclSymkDeepBytePerChunk : ncclSymkBytePerChunk;
     uint32_t chunks = (nBytes - cursor) / BytePerChunk;
     chunks -= imodFast32(chunks, nRanks * nBlocks, nRanks_nBlocks_rcp32);
     if (chunks != 0) {
@@ -362,7 +360,7 @@ static __device__ void allreduce(ncclSymkArgsHandler const& handler, int tn, int
       allreduceDeep<BytePerPack, UnrollPacks, UnrollPeers, T, EnableTma>(handler, tn, t, waitNeeded, bar, red,
                                                                          (ncclSymPtr<char>)input + cursor,
                                                                          (ncclSymPtr<char>)output + cursor,
-                                                                         chunks * MinWarpPerBlock);
+                                                                         chunks * ncclSymkMinWarpsPerBlock);
       cursor = cursorAfter;
       waitNeeded = false;
     }
@@ -370,14 +368,14 @@ static __device__ void allreduce(ncclSymkArgsHandler const& handler, int tn, int
 
   if (sizeof(T) == 4 || (sizeof(T) < 4 && (input.offset - output.offset) % 4 == 0)) {
     constexpr int BytePerPack = 4, UnrollPacks = 4, UnrollPeers = 4;
-    constexpr int BytePerChunk = MinWarpPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
+    constexpr int BytePerChunk = ncclSymkMinWarpsPerBlock * UnrollPacks * WARP_SIZE * BytePerPack;
     uint32_t chunks = (nBytes - cursor) / BytePerChunk;
     chunks -= imodFast32(chunks, nRanks * nBlocks, nRanks_nBlocks_rcp32);
     if (chunks != 0) {
       uintptr_t cursorAfter = cursor + uintptr_t(chunks) * BytePerChunk;
       allreduceDeep<(sizeof(T) <= BytePerPack ? BytePerPack : 0), UnrollPacks, UnrollPeers, T, /*EnableTma*/ false>(
         handler, tn, t, waitNeeded, bar, red, (ncclSymPtr<char>)input + cursor, (ncclSymPtr<char>)output + cursor,
-        chunks * MinWarpPerBlock);
+        chunks * ncclSymkMinWarpsPerBlock);
       cursor = cursorAfter;
       waitNeeded = false;
     }

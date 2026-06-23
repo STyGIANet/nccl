@@ -67,7 +67,10 @@ int ncclSymkLLKernelMask() {
 }
 int ncclSymkDynamicSmemKernelMask() {
   return kernelMask_DynamicSmem;
-};
+}
+int ncclSymkTmaKernelMask() {
+  return kernelMask_Tma;
+}
 
 int ncclSymkGinKernelMask() {
   return kernelMask_Gin;
@@ -79,6 +82,35 @@ int ncclSymkAGKernelMask() {
 
 int ncclSymkARKernelMask() {
   return kernelMask_AR;
+}
+
+int ncclSymkRSKernelMask() {
+  return kernelMask_RS;
+}
+
+// Host picker: true when nBytes is large enough for this kernel's TMA deep loop at nBlocks.
+bool ncclSymkTmaDeepEligible(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, int nBlocks) {
+  int bytePerChunk = 0;
+  int chunkMod = 0; // imodFast32 divisor on deep-loop chunk count (see src/device/symmetric/*.cuh)
+  switch (k) {
+  case ncclSymkKernelId_AllReduce_RSxTmaLD_AGxTmaST:
+  case ncclSymkKernelId_ReduceScatter_TmaLD:
+    bytePerChunk = ncclSymkDeepBytePerChunk;
+    chunkMod = comm->nRanks * nBlocks;
+    break;
+  case ncclSymkKernelId_AllGather_TmaST:
+    // Picker bar uses the 16 B-aligned deep tier; the 256 B TMA tier may still be skipped.
+    bytePerChunk = ncclSymkBytePerChunk;
+    chunkMod = nBlocks;
+    break;
+  case ncclSymkKernelId_AllGather_TmaSTMC:
+  case ncclSymkKernelId_AllGather_STMC:
+    bytePerChunk = ncclSymkMultimemDeepBytePerChunk;
+    chunkMod = 1;
+    break;
+  }
+  if (bytePerChunk == 0 || chunkMod == 0) return false;
+  return nBytes >= (size_t)bytePerChunk * (size_t)chunkMod;
 }
 
 static uint32_t kernelMask_coll(ncclFunc_t coll) {
@@ -96,7 +128,11 @@ static uint32_t kernelMask_coll(ncclFunc_t coll) {
 
 NCCL_PARAM(SymGinKernelsEnable, "SYM_GIN_KERNELS_ENABLE", 1)
 NCCL_PARAM(SymRsGinChunkSize, "SYM_RS_GIN_CHUNK_SIZE", -1)
-NCCL_PARAM(SymTmaEnable, "SYM_TMA_ENABLE", 0)
+NCCL_PARAM(SymTmaEnable, "SYM_TMA_ENABLE", 1)
+
+bool ncclSymkTmaAvailable(struct ncclComm* comm) {
+  return comm->minCompCap >= 100 && ncclParamSymTmaEnable();
+}
 
 static constexpr size_t ncclSymkRsGinDefaultChunkBytes = 128 << 10;
 static constexpr size_t ncclSymkRsGinMinChunkBytes = 128;
@@ -246,7 +282,7 @@ static bool ncclSymkImplemented(ncclFunc_t coll, int /*ncclDevRedOp_t*/ red, ncc
 }
 
 uint32_t ncclSymkMask(struct ncclComm* comm, ncclFunc_t coll, int /*ncclDevRedOp_t*/ red, ncclDataType_t ty,
-                      size_t nElts) {
+                      size_t nElts, bool symAligned16B) {
   uint32_t kmask = kernelMask_coll(coll);
 
   bool hasSTMC = comm->symkState.hasLsaMultimem;
@@ -285,8 +321,8 @@ uint32_t ncclSymkMask(struct ncclComm* comm, ncclFunc_t coll, int /*ncclDevRedOp
   // to be at least 32 bytes per chunk)
   if (nBusBytes >= 32 * (size_t(2) << 30)) kmask = 0;
 
-  bool hasTma = comm->minCompCap >= 100 && ncclParamSymTmaEnable();
-  if (!hasTma) kmask &= ~kernelMask_Tma;
+  if (!ncclSymkTmaAvailable(comm)) kmask &= ~kernelMask_Tma;
+  if (!symAligned16B) kmask &= ~kernelMask_Tma;
 
   bool hasGin = ncclParamSymGinKernelsEnable() != 0;
   if (!hasGin) kmask &= ~kernelMask_Gin;

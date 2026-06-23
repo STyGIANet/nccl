@@ -64,6 +64,7 @@ struct ncclTuningInput_t {
   int regBuff;
   int collNetSupport;
   int nvlsSupport;
+  bool symAligned16B; // Check for TMA eligibility in sym scheduler
 };
 
 struct ncclTuningContext_t {
