@@ -26,7 +26,8 @@ typedef struct {
 } ncclGinConfig_v14_t;
 
 // NOTE: v14 removes data operations (iput, iputSignal, iget, iflush) from the GIN interface.
-// These moved to the separate RMA plugin (ncclRma_v14_t).
+// These moved to the separate RMA plugin (ncclRma_v14_t). See plugins/rma/example for a
+// reference implementation.
 typedef struct {
   // Name of the GIN support (mainly for logs)
   const char* name;

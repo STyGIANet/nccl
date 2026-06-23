@@ -111,3 +111,12 @@ Some implementations require help from an additional CPU Proxy thread to progres
 The plugin exposes a `rmaProgress` function for such cases. This function is
 operation-independent and is called periodically regardless of whether
 a data operation is pending.
+
+## Example
+
+`plugins/rma/example` contains a minimal RMA v14 plugin. It is a compile/load example,
+not a functional network transport. Build it with:
+
+```shell
+make -C plugins/rma/example
+```
