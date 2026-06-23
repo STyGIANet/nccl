@@ -245,10 +245,20 @@ NCCL_DEVICE_INLINE IntCount reduceCopyLoop(Coop coop, SrcLambda srcLambda, int n
   }
 
   if NCCL_IF_CONSTEXPR (!SkipTail) {
+    constexpr int TAIL_UNROLL_PACKS = (UNROLL_PACKS > 2) ? 2 : UNROLL_PACKS;
+    const int numGroups = (coopSize + stride - 1) / stride;
+    const IntCount tailPacksPerIteration = numGroups * (stride * TAIL_UNROLL_PACKS);
+    while (basePackIdx + tailPacksPerIteration <= params.totalPacks) {
+      processedElts += reduceCopyLoopCore<TAIL_UNROLL_PACKS, T, Pack, RedOp, IntCount, Coop, srcMultimem, dstMultimem,
+                                          SrcLambda, DstLambda, false>(coop, srcLambda, nSrc, dstLambda, nDst, redOp,
+                                                                       params.totalPacks, basePackIdx);
+      basePackIdx += tailPacksPerIteration;
+    }
+
     if (basePackIdx < params.totalPacks) {
-      processedElts +=
-        reduceCopyLoopCore<UNROLL_PACKS, T, Pack, RedOp, IntCount, Coop, srcMultimem, dstMultimem, SrcLambda, DstLambda,
-                           true>(coop, srcLambda, nSrc, dstLambda, nDst, redOp, params.totalPacks, basePackIdx);
+      processedElts += reduceCopyLoopCore<TAIL_UNROLL_PACKS, T, Pack, RedOp, IntCount, Coop, srcMultimem, dstMultimem,
+                                          SrcLambda, DstLambda, true>(coop, srcLambda, nSrc, dstLambda, nDst, redOp,
+                                                                      params.totalPacks, basePackIdx);
     }
   }
   return processedElts;
