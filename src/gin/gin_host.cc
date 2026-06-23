@@ -70,6 +70,7 @@ NCCL_PARAM(GinNconnections, "GIN_NCONNECTIONS", -2);
 
 ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
   struct ncclGinState* ginState = &comm->sharedRes->ginState;
+  ncclTeam_t ginTeam;
   if (ginState->connected) return ncclSuccess;
 
   ncclResult_t ret = ncclSuccess;
@@ -127,28 +128,19 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
   NCCLCHECKGOTO(ncclCalloc(&allHandles, (size_t)comm->nRanks * NCCL_NET_HANDLE_MAXSIZE), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&handles, comm->nRanks), ret, fail);
 
-  int nGinRanks;
-  int myGinRank;
   // Connect the maximum supported connection type. Any future devComm may request
   // up to this connection type.
-  if (ginState->ginConnectionType == NCCL_GIN_CONNECTION_FULL) {
-    nGinRanks = comm->nRanks;
-    myGinRank = comm->rank;
-    for (int r = 0; r < nGinRanks; r++) {
-      handles[r] = allHandles + r * NCCL_NET_HANDLE_MAXSIZE;
-    }
-  } else {
-    ncclTeam_t ginTeam = {
+  ginTeam = ncclTeamWorld(comm);
+  if (ginState->ginConnectionType != NCCL_GIN_CONNECTION_FULL) {
+    ginTeam = {
       .nRanks = comm->nRanks / comm->contiguousRanksPerHost,
       .rank = comm->rank / comm->contiguousRanksPerHost,
       .stride = comm->contiguousRanksPerHost,
     };
-    nGinRanks = ginTeam.nRanks;
-    myGinRank = ginTeam.rank;
-    for (int r = 0; r < nGinRanks; r++) {
-      int worldRank = ncclTeamRankToWorld(comm, ginTeam, r);
-      handles[r] = allHandles + worldRank * NCCL_NET_HANDLE_MAXSIZE;
-    }
+  }
+  for (int r = 0; r < ginTeam.nRanks; r++) {
+    int worldRank = ncclTeamRankToWorld(comm, ginTeam, r);
+    handles[r] = allHandles + worldRank * NCCL_NET_HANDLE_MAXSIZE;
   }
 
   for (int n = 0; n < backend->ginCommCount; n++) {
@@ -160,7 +152,7 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
     NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, allHandles, NCCL_NET_HANDLE_MAXSIZE), ret, fail);
 
-    NCCLCHECKGOTO(backend->ncclGin->connect(backend->ginInstance, handles, nGinRanks, myGinRank, listenComm,
+    NCCLCHECKGOTO(backend->ncclGin->connect(backend->ginInstance, handles, ginTeam.nRanks, ginTeam.rank, listenComm,
                                             backend->ginComms + n),
                   ret, fail);
 
