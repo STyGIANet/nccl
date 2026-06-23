@@ -263,3 +263,12 @@ version to the plugin. Plugins can use the backend version in a few ways:
 gracefully.
 2. Implement a compatibility layer. If `backendVersion` is *older* than the version of the plugin,
 allocate/initialize the structs according to the format that existed at the time of `backendVersion`.
+
+## Example
+
+`plugins/gin/example` contains a minimal GIN plugin example. It exports the current v14
+interface while preserving older example exports for compatibility. Build it with:
+
+```shell
+make -C plugins/gin/example
+```

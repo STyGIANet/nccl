@@ -279,6 +279,7 @@ set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS} ${DEBUG_DEVICE_FLAGS}")
 set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS} -O3")
 
 if(NCCL_OS_LINUX)
+  add_subdirectory(plugins/gin/example)
   add_subdirectory(plugins/mixed/example)
   add_subdirectory(plugins/net)
   add_subdirectory(plugins/profiler/example)
