@@ -1709,19 +1709,12 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
                            (comm->globalGinSupport != NCCL_GIN_CONNECTION_NONE || isOneLsaTeams);
   comm->hostRmaSupport =
     comm->config.numRmaCtx > 0 && comm->symmetricSupport && (isOneLsaTeams || comm->globalRmaProxySupport);
-  if (!comm->symmetricSupport) {
+  if (!comm->symmetricSupport || comm->globalGinSupport == NCCL_GIN_CONNECTION_NONE) {
     INFO(NCCL_INIT,
-         "Symmetric memory is not supported. cuMemEnable %d, "
-         "globalGinSupport %d, cuMemGdrSupport %d",
-         ncclCuMemEnable(), comm->globalGinSupport, globalCuMemGdrSupport);
-  }
-
-  if (comm->globalGinSupport == NCCL_GIN_CONNECTION_NONE) {
-    INFO(NCCL_INIT,
-         "GIN is not supported. contiguousRanksPerHost %d, crossNicSupport %d, cuMemGdrSupport %d globalGinSupport %d "
-         "hasMloPart %d",
-         comm->contiguousRanksPerHost, globalCrossNicSupport, globalCuMemGdrSupport, comm->globalGinSupport,
-         comm->hasMloPart);
+         "symmetricSupport %d, cuMemEnable %d, globalGinSupport %d, cuMemGdrSupport %d, contiguousRanksPerHost %d, "
+         "crossNicSupport %d",
+         comm->symmetricSupport, ncclCuMemEnable(), comm->globalGinSupport, globalCuMemGdrSupport,
+         comm->contiguousRanksPerHost, globalCrossNicSupport);
   }
 
   comm->ceColl.baseUCSymReadyPtr = NULL;
