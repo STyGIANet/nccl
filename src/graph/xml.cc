@@ -984,12 +984,12 @@ ncclResult_t ncclTopoGetXmlFromGpu(struct ncclXmlNode* pciNode, nvmlDevice_t nvm
         {
           nvmlPciInfo_t remoteProc = {};
           if (ncclNvmlDeviceGetNvLinkRemotePciInfo(nvmlDev, l, &remoteProc) != ncclSuccess ||
-              remoteProc.busId[0] == '\0') {
+              remoteProc.busIdLegacy[0] == '\0') {
             INFO(NCCL_INIT | NCCL_GRAPH, "Unable to get RemotePciInfo for NVLink %d, igoring.", l);
             continue;
           }
           // small cap the device PCI bus id
-          char* p = remoteProc.busId;
+          char* p = remoteProc.busIdLegacy;
           for (int c = 0; c < NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE; c++) {
             lowerId[c] = tolower(p[c]);
             if (p[c] == 0) break;

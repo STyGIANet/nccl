@@ -1527,7 +1527,7 @@ ncclResult_t ncclOsGetPciDeviceClass(nvmlDevice_t device, char* deviceClass, siz
   }
 
   // Use the helper function with the busId
-  ncclResult_t classRet = ncclOsGetPciDeviceClassByBusId(pciInfo.busId, deviceClass, maxLen);
+  ncclResult_t classRet = ncclOsGetPciDeviceClassByBusId(pciInfo.busIdLegacy, deviceClass, maxLen);
   if (classRet != ncclSuccess) return classRet;
   return ncclSuccess;
 }
@@ -1543,12 +1543,12 @@ ncclResult_t ncclOsGetPciDeviceParent(nvmlDevice_t device, char** parentBusId) {
     return ret;
   }
 
-  INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Getting parent for device %s", pciInfo.busId);
+  INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Getting parent for device %s", pciInfo.busIdLegacy);
 
   // Parse the bus ID to extract bus, device, and function numbers
   DWORD bus, dev, func;
-  if (!parsePciBusId(pciInfo.busId, &bus, &dev, &func)) {
-    WARN("ncclOsGetPciDeviceParent: Failed to parse PCI bus ID: %s", pciInfo.busId);
+  if (!parsePciBusId(pciInfo.busIdLegacy, &bus, &dev, &func)) {
+    WARN("ncclOsGetPciDeviceParent: Failed to parse PCI bus ID: %s", pciInfo.busIdLegacy);
     return ncclSystemError;
   }
 
@@ -1556,14 +1556,14 @@ ncclResult_t ncclOsGetPciDeviceParent(nvmlDevice_t device, char** parentBusId) {
   DeviceInfo devInfo;
   ret = getDeviceInfo(bus, dev, func, &devInfo);
   if (ret != ncclSuccess) {
-    INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Could not find device %s", pciInfo.busId);
+    INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Could not find device %s", pciInfo.busIdLegacy);
     return ncclSystemError;
   }
 
   // Get parent device instance
   DEVINST parentDevInst;
   if (CM_Get_Parent(&parentDevInst, devInfo.devInst, 0) != CR_SUCCESS) {
-    INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: No parent found for device %s", pciInfo.busId);
+    INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: No parent found for device %s", pciInfo.busIdLegacy);
     return ncclSystemError;
   }
 
@@ -1581,6 +1581,6 @@ ncclResult_t ncclOsGetPciDeviceParent(nvmlDevice_t device, char** parentBusId) {
     return ncclSystemError;
   }
 
-  INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Device %s has parent %s", pciInfo.busId, *parentBusId);
+  INFO(NCCL_INIT, "ncclOsGetPciDeviceParent: Device %s has parent %s", pciInfo.busIdLegacy, *parentBusId);
   return ncclSuccess;
 }
