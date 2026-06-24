@@ -29,6 +29,7 @@
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
+NCCL_PARAM(P2pPerChannelRegNetBw, "P2P_PER_CHANNEL_REG_NET_BW", /*GB/s*/ -1); // -1 = full network bw
 
 // Higher CE threshold for AllGather since TMA kernels continue to perform better till higher message sizes.
 static int64_t symCeAllGatherThreshold(struct ncclComm* comm) {
@@ -947,8 +948,6 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
         partSize = divUp(bytes[dir], nChannels[dir]);
       }
     }
-    // Update number of channels propagated to the profiler
-    if (p2pTasks[dir]) p2pTasks[dir]->nChannels = nChannels[dir];
 
     // Select protocol (LL vs SIMPLE) used based on payload per channel
     if (bytes[dir] != -1) protoLL[dir] &= bytes[dir] <= nChannels[dir] * ncclParamP2pLLThreshold();
@@ -1013,6 +1012,17 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
         ipcRegistered[dir] = regFlag ? true : false;
       }
     }
+    // Tune channel count for registered NET buffers
+    if (netRegistered[dir]) {
+      // Keep at least one channel per local NET device, then use the bw per channel value if defined
+      int regChannels = std::max(1, comm->minNetCount);
+      if (ncclParamP2pPerChannelRegNetBw() > 0)
+        regChannels = std::max(regChannels, divUp((int)comm->minLocalNetBw, (int)ncclParamP2pPerChannelRegNetBw()));
+
+      nChannels[dir] = std::min(nChannels[dir], regChannels);
+    }
+    // Update number of channels propagated to the profiler
+    if (p2pTasks[dir]) p2pTasks[dir]->nChannels = nChannels[dir];
   }
 
   struct ncclWorkList* workNode;

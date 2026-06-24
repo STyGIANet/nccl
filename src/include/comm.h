@@ -555,6 +555,7 @@ struct ncclComm {
   struct ncclIntruQueue<struct ncclCommCallback, &ncclCommCallback::next> legacyRegCleanupQueue;
   bool peerInfoValid;
   int minNetCount; // Minimum number of network devices local to a rank
+  float minLocalNetBw; // Minimum total network bandwidth local to a GPU
   float minNetBw; // Minimum bw of any network device local to a rank
 
   ncclNet_t* ncclNet;
