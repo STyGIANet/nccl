@@ -360,8 +360,9 @@ void rasClientEventLoop(struct rasClient* client, int pollIdx) {
         rasClientEnqueueMsg(client, msg, msgLen);
       } else if (strncasecmp(cmd, "timeout ", strlen("timeout ")) == 0) {
         char* endPtr = nullptr;
-        int timeout = strtol(cmd + strlen("timeout "), &endPtr, 10);
-        if (timeout < 0 || !endPtr || *endPtr != '\0') {
+        errno = 0;
+        double timeout = strtod(cmd + strlen("timeout "), &endPtr);
+        if (errno != 0 || !endPtr || *endPtr != '\0' || !std::isfinite(timeout) || timeout < 0.0) {
           snprintf(rasLine, sizeof(rasLine), "ERROR: Invalid timeout value %s\n", cmd + strlen("timeout "));
         } else {
           client->timeout = timeout * CLOCK_UNITS_PER_SEC;
@@ -788,7 +789,8 @@ static ncclResult_t rasClientRunInit(struct rasClient* client) {
 
 #if 0 // Commented out for now to focus the summary status report on the information most relevant to the users.
   // To be revisited with future extensions to RAS.
-  rasOutAppend("\nGathering data about the RAS network (timeout %lds)...", client->timeout / CLOCK_UNITS_PER_SEC);
+  rasOutAppend("\nGathering data about the RAS network (timeout %gs)...",
+               (double)client->timeout / CLOCK_UNITS_PER_SEC);
   msgLen = rasOutLength();
   NCCLCHECKGOTO(rasClientAllocMsg(&msg, msgLen), ret, fail);
   rasOutExtract(msg);
@@ -851,7 +853,7 @@ static ncclResult_t rasClientRunConns(struct rasClient* client) {
   client->coll = nullptr;
 
   rasOutReset();
-  rasOutAppend(" obtained a result in %.3fs\n", (clockNano()-coll->startTime)/1e9);
+  rasOutAppend(" obtained a result in %.3fs\n", (double)(clockNano() - coll->startTime) / CLOCK_UNITS_PER_SEC);
   if (coll->nLegTimeouts > 0) {
     rasOutAppend(" Warning: encountered %d communication timeout%s while gathering data\n", coll->nLegTimeouts,
                  (coll->nLegTimeouts > 1 ? "s" : ""));
@@ -910,8 +912,9 @@ static ncclResult_t rasClientRunConns(struct rasClient* client) {
                  connsData->nConns, (connsData->nConns > 1 ? "s" : ""));
     rasOutAppend(" Travel times (valid only if system clocks are synchronized between nodes):\n"
                  "  Minimum %.3fs, maximum %.3fs, average %.3fs\n",
-                 connsData->travelTimeMin/1e9, connsData->travelTimeMax/1e9,
-                 connsData->travelTimeSum/(1e9*connsData->travelTimeCount));
+                 (double)connsData->travelTimeMin / CLOCK_UNITS_PER_SEC,
+                 (double)connsData->travelTimeMax / CLOCK_UNITS_PER_SEC,
+                 (double)connsData->travelTimeSum / (CLOCK_UNITS_PER_SEC * connsData->travelTimeCount));
   } else {
     rasOutAppend(" No connection data collected!\n");
   }
@@ -930,14 +933,14 @@ static ncclResult_t rasClientRunConns(struct rasClient* client) {
           rasOutAppend("  From node %s process %d to node %s process %d: observed travel time of %.3fs\n",
                        ncclSocketToHost(&negativeMin->source, rasLine, sizeof(rasLine)), rasPeers[sourcePeerIdx].pid,
                        ncclSocketToHost(&negativeMin->dest, lineBuf, sizeof(lineBuf)), rasPeers[destPeerIdx].pid,
-                       negativeMin->travelTimeMin/1e9);
+                       (double)negativeMin->travelTimeMin / CLOCK_UNITS_PER_SEC);
       }
     }
   }
   rasCollFree(coll);
 
-  rasOutAppend("\nGathering data about the NCCL communicators (timeout %lds)...",
-               client->timeout / CLOCK_UNITS_PER_SEC);
+  rasOutAppend("\nGathering data about the NCCL communicators (timeout %gs)...",
+               (double)client->timeout / CLOCK_UNITS_PER_SEC);
   msgLen = rasOutLength();
   NCCLCHECKGOTO(rasClientAllocMsg(&msg, msgLen), ret, fail);
   rasOutExtract(msg);
@@ -1049,7 +1052,7 @@ static ncclResult_t rasClientRunComms(struct rasClient* client) {
   }
 
   // Default TEXT format continues below.
-  rasOutAppend(" (%.3fs)\n=============\n\n", (clockNano() - coll->startTime) / 1e9);
+  rasOutAppend(" (%.3fs)\n=============\n\n", (double)(clockNano() - coll->startTime) / CLOCK_UNITS_PER_SEC);
 
   // Fill in the remaining fields of auxComm's.
   for (int commIdx = 0; commIdx < commsData->nComms; commIdx++) {
@@ -2162,7 +2165,7 @@ static void rasDumpCommsToJSON(struct rasClient* client, struct rasCollComms* co
   }
 
   // Write JSON footer with RAS metadata.
-  jsonWriteFooter((clockNano() - coll->startTime) / 1e9, coll->nLegTimeouts);
+  jsonWriteFooter((double)(clockNano() - coll->startTime) / CLOCK_UNITS_PER_SEC, coll->nLegTimeouts);
 }
 
 // Determines if the given count constitutes an outlier.

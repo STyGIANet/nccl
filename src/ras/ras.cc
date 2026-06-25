@@ -309,7 +309,7 @@ void rasConnEnqueueMsg(struct rasConnection* conn, struct rasMsg* msg, size_t ms
          "RAS enqueued message type %d on a non-ready connection with %s "
          "(experiencingDelays %d, startRetryTime %.2fs, socket status %d)",
          msg->type, ncclSocketToString(&conn->addr, rasLine), conn->experiencingDelays,
-         (conn->startRetryTime ? (clockNano() - conn->startRetryTime) / 1e9 : 0.0),
+         (conn->startRetryTime ? (double)(clockNano() - conn->startRetryTime) / CLOCK_UNITS_PER_SEC : 0.0),
          (conn->sock ? conn->sock->status : -1));
   }
 }
@@ -435,11 +435,11 @@ static ncclResult_t rasMsgHandleConnInit(const struct rasMsg* msg, struct rasSoc
     INFO(NCCL_RAS,
          "RAS found a matching existing connection (sendQ %sempty, experiencingDelays %d, startRetryTime %.2fs)",
          (ncclIntruQueueEmpty(&conn->sendQ) ? "" : "not "), conn->experiencingDelays,
-         (conn->startRetryTime ? (clockNano() - conn->startRetryTime) / 1e9 : 0.0));
+         (conn->startRetryTime ? (double)(clockNano() - conn->startRetryTime) / CLOCK_UNITS_PER_SEC : 0.0));
 
     if (conn->sock) {
       INFO(NCCL_RAS, "RAS found an alternative existing socket (status %d, createTime %.2fs)", conn->sock->status,
-           (clockNano() - conn->sock->createTime) / 1e9);
+           (double)(clockNano() - conn->sock->createTime) / CLOCK_UNITS_PER_SEC);
       // In general we prefer to keep the newer connection, but "newer" can be a relative term: we may have
       // a race where both sides attempt to establish a connection at roughly the same time, so the other side's
       // incoming connection ends up looking newer than the locally-initiated one -- for *both* of them.
@@ -599,19 +599,19 @@ static void* rasThreadMain(void*) {
 
   // Main event loop of the RAS thread.
   for (int64_t nextWakeup = 0;;) {
-    int timeout, nEvents;
+    int timeoutMs, nEvents;
     int64_t now = clockNano();
     if (nextWakeup > 0) {
       // The "1" below helps avoid round-downs and especially zeroes.
-      if (nextWakeup > now) timeout = (nextWakeup - now) / (CLOCK_UNITS_PER_SEC / 1000) + 1;
-      else timeout = 1;
+      timeoutMs = std::max(nextWakeup - now, (int64_t)0) / (CLOCK_UNITS_PER_SEC / 1000) + 1;
     } else {
-      timeout = 1000; // 1 second.
+      timeoutMs = rasTimeoutFactorSec(1) * 1000;
     }
+    timeoutMs = std::min(timeoutMs, 1000); // At most 1 actual second.
 
-    nEvents = poll(rasPfds, nRasPfds, timeout);
+    nEvents = poll(rasPfds, nRasPfds, timeoutMs);
 
-    nextWakeup = clockNano() + CLOCK_UNITS_PER_SEC;
+    nextWakeup = clockNano() + rasTimeoutFactorNs(1); // 1 second (possibly stretched).
     if (nEvents == -1 && errno != EINTR) {
       INFO(NCCL_RAS, "RAS continuing in spite of an unexpected error from poll: %s", strerror(errno));
     }

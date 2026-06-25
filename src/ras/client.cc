@@ -7,6 +7,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +37,7 @@ static void timevalAddSeconds(struct timeval* tv, double seconds) {
 
 static const char* hostName = "localhost";
 static const char* port = STR(NCCL_RAS_CLIENT_PORT);
-static int timeout = -1;
+static double timeout = -1.0;
 static bool verbose = false;
 static bool monitorMode = false;
 static const char* format = nullptr;
@@ -108,8 +109,9 @@ static void parseArgs(int argc, char** argv) {
     case 't':
       {
         char* endPtr = nullptr;
-        timeout = strtol(optarg, &endPtr, 10);
-        if (timeout < 0 || !endPtr || *endPtr != '\0') {
+        errno = 0;
+        timeout = strtod(optarg, &endPtr);
+        if (errno != 0 || !endPtr || *endPtr != '\0' || !std::isfinite(timeout) || timeout < 0.0) {
           fprintf(stderr, "Invalid timeout: %s\n", optarg);
           exit(1);
         }
@@ -174,7 +176,8 @@ static int connectToNCCL() {
   int ret;
   char msgBuf[1024];
   int bytes;
-  struct timeval tv = {TIMEOUT_INCREMENT, 0};
+  struct timeval tv = {0, 0};
+  timevalAddSeconds(&tv, rasTimeoutFactorSec(TIMEOUT_INCREMENT));
 
 retry:
   hints.ai_family = AF_UNSPEC;
@@ -192,7 +195,7 @@ retry:
       continue;
     }
     // Initially start with a small, 1-sec timeout to quickly eliminate non-responsive processes...
-    if (timeout) {
+    if (timeout != 0.0) {
 #if defined(NCCL_OS_LINUX)
       if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0 ||
           setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
@@ -263,8 +266,8 @@ retry:
             msgBuf + strlen("SERVER PROTOCOL "), NCCL_RAS_CLIENT_PROTOCOL);
   }
 
-  if (timeout >= 0) {
-    snprintf(msgBuf, sizeof(msgBuf), "TIMEOUT %d\n", timeout);
+  if (timeout >= 0.0) {
+    snprintf(msgBuf, sizeof(msgBuf), "TIMEOUT %g\n", timeout);
     if (socketWrite(sock, msgBuf, strlen(msgBuf)) != strlen(msgBuf)) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         goto timeout;
@@ -289,9 +292,9 @@ retry:
       goto fail;
     }
   }
-  if (timeout) {
+  if (timeout != 0.0) {
     // Increase the socket timeout to accommodate NCCL timeout.
-    const double legTimeout = (timeout > 0 ? timeout : rasTimeoutFactorSec(RAS_COLLECTIVE_LEG_TIMEOUT_SEC));
+    const double legTimeout = (timeout > 0.0 ? timeout : rasTimeoutFactorSec(RAS_COLLECTIVE_LEG_TIMEOUT_SEC));
     timevalAddSeconds(&tv, legTimeout + rasTimeoutFactorSec(RAS_COLLECTIVE_EXTRA_TIMEOUT_SEC));
 #if defined(NCCL_OS_LINUX)
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
@@ -415,7 +418,12 @@ static int monitorNCCLEvents() {
   }
 
   // Disable receive timeout for monitor mode (wait indefinitely for notifications).
+#if defined(NCCL_OS_LINUX)
   if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
+#elif defined(NCCL_OS_WINDOWS)
+  DWORD timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms)) != 0) {
+#endif
     perror("Failed to disable socket timeout for monitor mode");
     return 1;
   }

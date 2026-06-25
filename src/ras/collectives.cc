@@ -202,9 +202,9 @@ ncclResult_t rasMsgHandleCollReq(struct rasMsg* msg, struct rasSocket* sock) {
   struct rasCollective* coll = nullptr;
   char line[SOCKET_NAME_MAXLEN + 1];
 
-  INFO(NCCL_RAS, "RAS handling collReq from %s (root %s:%" PRIu64 ", timeout %" PRId64 ", type %d)",
+  INFO(NCCL_RAS, "RAS handling collReq from %s (root %s:%" PRIu64 ", timeout %gs, type %d)",
        ncclSocketToString(&sock->sock.addr, rasLine), ncclSocketToString(&msg->collReq.rootAddr, line),
-       msg->collReq.rootId, (int64_t)(msg->collReq.timeout / CLOCK_UNITS_PER_SEC), msg->collReq.type);
+       msg->collReq.rootId, (double)msg->collReq.timeout / CLOCK_UNITS_PER_SEC, msg->collReq.type);
   if (sock->conn == nullptr) {
     INFO(NCCL_RAS, "RAS socket lacks a connection: status %d -- internal error?", sock->status);
     return ncclInternalError;
@@ -438,9 +438,9 @@ void rasCollsHandleTimeouts(int64_t now, int64_t* nextWakeup) {
       if (now - coll->startTime > coll->timeout) {
         // We've exceeded the leg timeout.  For all outstanding responses, check their connections.
         if (!coll->timeoutWarned) {
-          INFO(NCCL_RAS, "RAS collective %s:%" PRIu64 " timeout warning (%" PRId64 "s) -- %d responses missing",
+          INFO(NCCL_RAS, "RAS collective %s:%" PRIu64 " timeout warning (%gs) -- %d responses missing",
                ncclSocketToString(&coll->rootAddr, rasLine), coll->rootId,
-               (int64_t)((now - coll->startTime) / CLOCK_UNITS_PER_SEC), coll->nFwdSent - coll->nFwdRecv);
+               (double)(now - coll->startTime) / CLOCK_UNITS_PER_SEC, coll->nFwdSent - coll->nFwdRecv);
           coll->timeoutWarned = true;
         }
         for (int i = 0; i < coll->nFwdSent; i++) {
@@ -473,10 +473,9 @@ void rasCollsHandleTimeouts(int64_t now, int64_t* nextWakeup) {
           if (now - coll->startTime > coll->timeout + RAS_COLLECTIVE_EXTRA_TIMEOUT) {
             // We've exceeded even the longer timeout, which is unexpected.  Try to return whatever we have (though
             // the originator of the collective, if it's not us, may have timed out already anyway).
-            INFO(NCCL_RAS,
-                 "RAS collective %s:%" PRIu64 " timeout error (%" PRId64 "s) -- giving up on %d missing responses",
+            INFO(NCCL_RAS, "RAS collective %s:%" PRIu64 " timeout error (%gs) -- giving up on %d missing responses",
                  ncclSocketToString(&coll->rootAddr, rasLine), coll->rootId,
-                 (int64_t)((now - coll->startTime) / CLOCK_UNITS_PER_SEC), coll->nFwdSent - coll->nFwdRecv);
+                 (double)(now - coll->startTime) / CLOCK_UNITS_PER_SEC, coll->nFwdSent - coll->nFwdRecv);
             coll->nLegTimeouts += coll->nFwdSent - coll->nFwdRecv;
             coll->nFwdRecv = coll->nFwdSent;
             (void)rasCollReadyResp(coll);

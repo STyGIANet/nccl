@@ -41,7 +41,7 @@ static float rasLoadTimeoutFactor() {
   }
 
 #ifndef NCCL_RAS_CLIENT
-  INFO(NCCL_ENV, "NCCL_RAS_TIMEOUT_FACTOR set by environment to %g.", value);
+  INFO(NCCL_ENV, "NCCL_RAS_TIMEOUT_FACTOR set by environment to %g", value);
 #endif
   return (float)value;
 }
