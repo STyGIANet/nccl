@@ -29,28 +29,49 @@
  */
 
 /**
- * @file gdaki_gdrcopy.h
- * @brief A header file for the GDRCopy APIs used in GDAKI
+ * @file doca_sdk_wrapper.h
+ * @brief Wrapper for DOCA SDK API calls and structs
+ *
+ * This wrapper provides an abstraction layer over DOCA SDK APIs.
+ * It's enabled by default. At runtime, if the DOCA_SDK_LIB_PATH env var
+ * is set, DOCA open will look for DOCA SDK to execute functions.
+ * When DOCA_SDK_LIB_PATH env var is defined:
+ * - All DOCA SDK API calls are wrapped using dlopen
+ * - All DOCA SDK API structs are wrapped
+ * - The wrapper provides a clean abstraction layer with dynamic loading
+ *
+ * If the env var DOCA_SDK_LIB_PATH is not set, the standalone open source implementation
+ * is used. This means, DOCA SDK restricted features are not available.
+ *
+ * @{
  */
-
-#ifndef DOCA_GPUNETIO_GDRCOPY_H
-#define DOCA_GPUNETIO_GDRCOPY_H
-
-#include <stddef.h>
-#include <stdbool.h>
+#ifndef DOCA_GPUNETIO_SDK_WRAPPER_H
+#define DOCA_GPUNETIO_SDK_WRAPPER_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-bool doca_gpu_gdrcopy_is_supported();
-bool doca_gpu_gdrcopy_supports_force_pcie();
-int doca_gpu_gdrcopy_create_mapping(void *dev_aligned_ptr, size_t size, bool force_pcie, void **out_mh,
-                                    void **out_host_ptr);
-void doca_gpu_gdrcopy_destroy_mapping(void *mh, void *host_ptr, size_t size);
+#include "host/doca_error.h"
+#include "host/doca_gpunetio.h"
+#include "doca_sdk_wrapper.h"
+
+/* Wrapper function declarations */
+doca_sdk_wrapper_error_t doca_gpu_sdk_wrapper_create(const char *gpu_bus_id, void **gpu_dev);
+doca_sdk_wrapper_error_t doca_gpu_sdk_wrapper_destroy(void *gpu_dev);
+doca_sdk_wrapper_error_t doca_gpu_sdk_wrapper_mem_alloc(void *gpu_dev, size_t size,
+                                                        size_t alignment,
+                                                        enum doca_gpu_mem_type mtype,
+                                                        void **memptr_gpu, void **memptr_cpu);
+
+doca_sdk_wrapper_error_t doca_gpu_sdk_wrapper_mem_free(void *gpu, void *memptr_gpu);
+doca_sdk_wrapper_error_t doca_gpu_sdk_wrapper_dmabuf_fd(void *gpu, void *memptr_gpu, size_t size,
+                                                        int *dmabuf_fd);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // DOCA_GPUNETIO_GDRCOPY_H
+#endif /* DOCA_GPUNETIO_SDK_WRAPPER_H */
+
+/** @} */

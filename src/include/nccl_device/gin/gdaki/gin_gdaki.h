@@ -10,8 +10,8 @@
 
 #include "nccl_device/utility.h"
 #include <cstdint>
-#ifndef DOCA_VERBS_USE_CUDA_WRAPPER
-#define DOCA_VERBS_USE_CUDA_WRAPPER
+#ifndef DOCA_GPUNETIO_USE_CUDA_WRAPPER
+#define DOCA_GPUNETIO_USE_CUDA_WRAPPER
 #endif
 
 #ifndef DOCA_VERBS_USE_NET_WRAPPER
@@ -343,7 +343,7 @@ NCCL_DEVICE_INLINE static void waitImpl(ncclGinCtx ctx, ncclGinRequest_t& reques
     uint32_t steps = 0;
     int status = EBUSY;
     while (status != 0 && !testAbort(abortFlag, steps)) {
-      status = doca_gpu_dev_verbs_poll_one_cq_at<doca_sharing_mode>(&qp->cq_sq, pollIdx);
+      status = doca_gpu_dev_verbs_poll_one_cq_at<doca_sharing_mode>(qp, pollIdx);
     }
   } else {
     doca_gpu_dev_verbs_wait<doca_sharing_mode>(qp, pollIdx);

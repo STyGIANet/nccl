@@ -28,14 +28,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef DOCA_VERBS_CUDA_WRAPPER_H
-#define DOCA_VERBS_CUDA_WRAPPER_H
+#ifndef DOCA_GPUNETIO_CUDA_WRAPPER_H
+#define DOCA_GPUNETIO_CUDA_WRAPPER_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifdef DOCA_VERBS_USE_CUDA_WRAPPER
+#ifdef DOCA_GPUNETIO_USE_CUDA_WRAPPER
 
 /* CUDA type declarations for builds without cuda.h */
 typedef enum cudaError_enum {
@@ -73,30 +73,26 @@ typedef enum CUflushGPUDirectRDMAWritesScope_enum {
 typedef void *CUcontext;
 
 /* Wrapper function declarations */
-CUresult doca_verbs_wrapper_cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib, CUdevice dev);
-CUresult doca_verbs_wrapper_cuPointerSetAttribute(const void *value, CUpointer_attribute attribute,
-                                                  CUdeviceptr ptr);
-CUresult doca_verbs_wrapper_cuMemGetHandleForAddressRange(int *pHandle, CUdeviceptr dptr,
-                                                          size_t size,
-                                                          CUmemRangeHandleType handleType,
-                                                          unsigned long long flags);
-CUresult doca_verbs_wrapper_cuCtxGetCurrent(CUcontext *pctx);
-
-/* Initialization function */
-int doca_cuda_wrapper_init(void);
+CUresult doca_gpu_cuda_wrapper_cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
+                                                    CUdevice dev);
+CUresult doca_gpu_cuda_wrapper_cuPointerSetAttribute(const void *value,
+                                                     CUpointer_attribute attribute,
+                                                     CUdeviceptr ptr);
+CUresult doca_gpu_cuda_wrapper_cuMemGetHandleForAddressRange(int *pHandle, CUdeviceptr dptr,
+                                                             size_t size,
+                                                             CUmemRangeHandleType handleType,
+                                                             unsigned long long flags);
+CUresult doca_gpu_cuda_wrapper_cuCtxGetCurrent(CUcontext *pctx);
 
 #else
 
 #include <cuda.h>
 
 /* Direct API calls when wrapper is not enabled */
-#define doca_verbs_wrapper_cuDeviceGetAttribute cuDeviceGetAttribute
-#define doca_verbs_wrapper_cuPointerSetAttribute cuPointerSetAttribute
-#define doca_verbs_wrapper_cuMemGetHandleForAddressRange cuMemGetHandleForAddressRange
-#define doca_verbs_wrapper_cuCtxGetCurrent cuCtxGetCurrent
-
-/* No initialization needed when wrapper is not enabled */
-#define doca_cuda_wrapper_init() 0
+#define doca_gpu_cuda_wrapper_cuDeviceGetAttribute cuDeviceGetAttribute
+#define doca_gpu_cuda_wrapper_cuPointerSetAttribute cuPointerSetAttribute
+#define doca_gpu_cuda_wrapper_cuMemGetHandleForAddressRange cuMemGetHandleForAddressRange
+#define doca_gpu_cuda_wrapper_cuCtxGetCurrent cuCtxGetCurrent
 
 #endif
 
@@ -104,4 +100,4 @@ int doca_cuda_wrapper_init(void);
 }
 #endif
 
-#endif /* DOCA_VERBS_CUDA_WRAPPER_H */
+#endif /* DOCA_GPUNETIO_CUDA_WRAPPER_H */

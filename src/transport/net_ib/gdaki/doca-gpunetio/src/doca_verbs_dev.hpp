@@ -28,29 +28,49 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/**
- * @file gdaki_gdrcopy.h
- * @brief A header file for the GDRCopy APIs used in GDAKI
- */
+#pragma once
 
-#ifndef DOCA_GPUNETIO_GDRCOPY_H
-#define DOCA_GPUNETIO_GDRCOPY_H
-
-#include <stddef.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "host/doca_verbs.h"
 
-bool doca_gpu_gdrcopy_is_supported();
-bool doca_gpu_gdrcopy_supports_force_pcie();
-int doca_gpu_gdrcopy_create_mapping(void *dev_aligned_ptr, size_t size, bool force_pcie, void **out_mh,
-                                    void **out_host_ptr);
-void doca_gpu_gdrcopy_destroy_mapping(void *mh, void *host_ptr, size_t size);
+/**
+ *  @brief This struct implements the doca verbs dev
+ */
+struct doca_dev_open {
+   public:
+    /**
+     * @brief constructor
+     *
+     * @param [in] verbs_ctx
+     * ibv_context
+     * @param [in] verbs_pd
+     * ibv_pd
+     */
+    doca_dev_open(struct ibv_context *verbs_ctx, struct ibv_pd *verbs_pd);
 
-#ifdef __cplusplus
-}
-#endif
+    /**
+     * @brief destructor
+     */
+    ~doca_dev_open();
 
-#endif  // DOCA_GPUNETIO_GDRCOPY_H
+    /**
+     * @brief Return device ib_ctx
+     */
+    struct ibv_context *get_ctx() const { return m_ibv_ctx; }
+
+    /**
+     * @brief Return device ib_pd
+     */
+    struct ibv_pd *get_pd() const { return m_ibv_pd; }
+
+   private:
+    struct ibv_context *m_ibv_ctx{};
+    struct ibv_pd *m_ibv_pd{};
+
+    doca_dev_open(doca_dev_open const &) = delete;
+    doca_dev_open &operator=(doca_dev_open const &) = delete;
+};

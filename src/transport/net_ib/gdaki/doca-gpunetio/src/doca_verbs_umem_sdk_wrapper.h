@@ -29,28 +29,48 @@
  */
 
 /**
- * @file gdaki_gdrcopy.h
- * @brief A header file for the GDRCopy APIs used in GDAKI
+ * @file doca_verbs_umem_sdk_wrapper.h
+ * @brief Wrapper for DOCA SDK API calls and structs
+ *
+ * This wrapper provides an abstraction layer over DOCA SDK APIs.
+ * It's enabled by default. At runtime, if the DOCA_SDK_LIB_PATH env var
+ * is set, DOCA open will look for DOCA SDK to execute functions.
+ * When DOCA_SDK_LIB_PATH env var is defined:
+ * - All DOCA SDK API calls are wrapped using dlopen
+ * - All DOCA SDK API structs are wrapped
+ * - The wrapper provides a clean abstraction layer with dynamic loading
+ *
+ * If the env var DOCA_SDK_LIB_PATH is not set, the standalone open source implementation
+ * is used. This means, DOCA SDK restricted features are not available.
+ *
+ * @{
  */
-
-#ifndef DOCA_GPUNETIO_GDRCOPY_H
-#define DOCA_GPUNETIO_GDRCOPY_H
-
-#include <stddef.h>
-#include <stdbool.h>
+#ifndef DOCA_VERBS_SDK_WRAPPER_UMEM_H
+#define DOCA_VERBS_SDK_WRAPPER_UMEM_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-bool doca_gpu_gdrcopy_is_supported();
-bool doca_gpu_gdrcopy_supports_force_pcie();
-int doca_gpu_gdrcopy_create_mapping(void *dev_aligned_ptr, size_t size, bool force_pcie, void **out_mh,
-                                    void **out_host_ptr);
-void doca_gpu_gdrcopy_destroy_mapping(void *mh, void *host_ptr, size_t size);
+#include "host/doca_error.h"
+#include "host/doca_verbs.h"
+#include "doca_sdk_wrapper.h"
+
+/* Wrapper function declarations */
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_umem_create(doca_dev_t *net_dev, doca_gpu_t *gpu,
+                                                            void *address, size_t size,
+                                                            uint32_t access_flags, int dmabuf_id,
+                                                            size_t dmabuf_offset, void **umem);
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_umem_destroy(void *umem);
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_umem_get_id(void *umem, uint32_t *umem_id);
+
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_umem_get_size(void *umem, size_t *umem_size);
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_umem_get_address(void *umem, void **umem_address);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // DOCA_GPUNETIO_GDRCOPY_H
+#endif /* DOCA_VERBS_SDK_WRAPPER_UMEM_H */
+
+/** @} */

@@ -236,7 +236,7 @@ if(NCCL_OS_WINDOWS)
     # Windows: explicitly disable GIN so all code (host + device) and headers see it as 0
     add_definitions(-DNCCL_GIN_PROXY_ENABLE=0)
 else()
-    add_definitions(-DDOCA_VERBS_USE_CUDA_WRAPPER)
+    add_definitions(-DDOCA_GPUNETIO_USE_CUDA_WRAPPER)
     add_definitions(-DDOCA_VERBS_USE_NET_WRAPPER)
     add_definitions(-DNCCL_GIN_PROXY_ENABLE=1)
 endif()

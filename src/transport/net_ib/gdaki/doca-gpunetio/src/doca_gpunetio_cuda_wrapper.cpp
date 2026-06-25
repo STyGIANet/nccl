@@ -34,7 +34,7 @@
 #include <sys/syslog.h>
 #include <mutex>
 
-#include "doca_verbs_cuda_wrapper.h"
+#include "doca_gpunetio_cuda_wrapper.h"
 #include "doca_gpunetio_log.hpp"
 
 /* Function pointer types for CUDA device APIs */
@@ -64,7 +64,7 @@ static void *get_cuda_symbol(const char *symbol_name) {
     return symbol;
 }
 
-static void doca_verbs_wrapper_init_once(int *ret) {
+static void doca_gpunetio_cuda_wrapper_init(int *ret) {
     /* Open libcuda.so */
     cuda_handle = dlopen("libcuda.so.1", RTLD_NOW);
     if (!cuda_handle) {
@@ -99,31 +99,33 @@ static void doca_verbs_wrapper_init_once(int *ret) {
 static int init_cuda_wrapper(void) {
     static int ret = 0;
     static std::once_flag once;
-    std::call_once(once, doca_verbs_wrapper_init_once, &ret);
+    std::call_once(once, doca_gpunetio_cuda_wrapper_init, &ret);
     return ret;
 }
 
 /* Wrapper function implementations */
-CUresult doca_verbs_wrapper_cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib, CUdevice dev) {
+CUresult doca_gpu_cuda_wrapper_cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
+                                                    CUdevice dev) {
     if (init_cuda_wrapper() != 0) return CUDA_ERROR_NOT_INITIALIZED;
     return p_cuDeviceGetAttribute(pi, attrib, dev);
 }
 
-CUresult doca_verbs_wrapper_cuPointerSetAttribute(const void *value, CUpointer_attribute attribute,
-                                                  CUdeviceptr ptr) {
+CUresult doca_gpu_cuda_wrapper_cuPointerSetAttribute(const void *value,
+                                                     CUpointer_attribute attribute,
+                                                     CUdeviceptr ptr) {
     if (init_cuda_wrapper() != 0) return CUDA_ERROR_NOT_INITIALIZED;
     return p_cuPointerSetAttribute(value, attribute, ptr);
 }
 
-CUresult doca_verbs_wrapper_cuMemGetHandleForAddressRange(int *pHandle, CUdeviceptr dptr,
-                                                          size_t size,
-                                                          CUmemRangeHandleType handleType,
-                                                          unsigned long long flags) {
+CUresult doca_gpu_cuda_wrapper_cuMemGetHandleForAddressRange(int *pHandle, CUdeviceptr dptr,
+                                                             size_t size,
+                                                             CUmemRangeHandleType handleType,
+                                                             unsigned long long flags) {
     if (init_cuda_wrapper() != 0) return CUDA_ERROR_NOT_INITIALIZED;
     return p_cuMemGetHandleForAddressRange(pHandle, dptr, size, handleType, flags);
 }
 
-CUresult doca_verbs_wrapper_cuCtxGetCurrent(CUcontext *pctx) {
+CUresult doca_gpu_cuda_wrapper_cuCtxGetCurrent(CUcontext *pctx) {
     if (init_cuda_wrapper() != 0) return CUDA_ERROR_NOT_INITIALIZED;
     return p_cuCtxGetCurrent(pctx);
 }
