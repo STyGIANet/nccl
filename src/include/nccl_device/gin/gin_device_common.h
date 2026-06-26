@@ -103,6 +103,9 @@ template <ncclNetDeviceType backend>
 struct ncclGinApi_Wait {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx, ncclGinRequest_t& outRequest, bool hasDescriptor,
                                       ncclGinDescriptorSmem* descriptor, cuda::memory_order ord, uint32_t* abortFlag);
+  NCCL_DEVICE_INLINE static ncclResult_t call(ncclGinCtx, ncclGinRequest_t& outRequest, bool hasDescriptor,
+                                              ncclGinDescriptorSmem* descriptor, cuda::memory_order ord,
+                                              uint32_t* abortFlag, uint64_t timeoutCycles);
 };
 
 template <ncclNetDeviceType backend>
@@ -170,6 +173,9 @@ struct ncclGinApi_Flush {
   template <typename Coop>
   NCCL_DEVICE_INLINE static void call(ncclGinCtx, Coop, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
                                       cuda::memory_order ord, uint32_t* abortFlag);
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static ncclResult_t call(ncclGinCtx, Coop, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
+                                              cuda::memory_order ord, uint32_t* abortFlag, uint64_t timeoutCycles);
 };
 #endif
 
