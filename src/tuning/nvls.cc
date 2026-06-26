@@ -144,6 +144,11 @@ ncclResult_t ncclTuningNvlsModelSim(struct ncclTuningInput_t* const inputs, stru
     tuning->timeUs = -1.0;
     return ret;
   }
+  if (inputs->func != ncclFuncAllReduce && inputs->comm->localRanks > NCCL_MAX_NVLS_ARITY) {
+    tuning->valid = 0;
+    tuning->timeUs = -1.0;
+    return ret;
+  }
   if (tuning->algo == NCCL_ALGO_NVLS && !inputs->collNetSupport && inputs->comm->nNodes > 1) {
     tuning->valid = 0;
     tuning->timeUs = -1.0;
