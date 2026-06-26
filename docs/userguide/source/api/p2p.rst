@@ -58,6 +58,10 @@ ncclPutSignal
 
  The target memory window ``peerWin`` must be registered using :c:func:`ncclCommWindowRegister`.
 
+ .. note::
+    ``localbuff`` must currently also be registered with :c:func:`ncclCommWindowRegister`.
+    This requirement may be relaxed in a future release.
+
  The ``sigIdx`` is the signal index identifier for the operation. It must be set to 0 for now.
 
  The ``ctx`` is the context identifier for the operation. It must be set to 0 for now.
