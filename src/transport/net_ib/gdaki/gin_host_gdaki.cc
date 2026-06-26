@@ -474,10 +474,16 @@ destroy_verbs_qp_attr:
 
 NCCL_PARAM(GinGdakiUseReliableDB, "GDAKI_USE_RELIABLE_DB", 0);
 
-ncclResult_t ncclGinGdakiCreateContext(void* collComm, int nSignals, int nCounters, int nContexts, int queueDepth,
-                                       int trafficClass, int backendVersion, void** outGinCtx,
+ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                        ncclNetDeviceHandle_t** outDevHandle) {
   ncclResult_t status = ncclSuccess;
+
+  const int nSignals = config->nSignals;
+  const int nCounters = config->nCounters;
+  const int nContexts = config->nContexts;
+  const int queueDepth = config->queueDepth;
+  const int trafficClass = config->trafficClass;
+  const int backendVersion = config->backendVersion;
 
   if (backendVersion < 0 || backendVersion > NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION) {
     WARN("Invalid GIN GDAKI backend version %d", backendVersion);
