@@ -126,6 +126,9 @@ struct ncclDevCommRequirements {
   int ginCustomStride;
 
   ncclGinType_t ginType;
+  // If true, initialize the devComm assuming the version of the device code is the same
+  // as the runtime version of the NCCL library (i.e., the device code is JIT-compiled).
+  bool useRuntimeVersion;
 };
 
 // clang-format off: maintain hand-formatted code
@@ -154,6 +157,7 @@ struct ncclDevCommRequirements {
     true,                                        /* ginVaSignalsRequired */     \
     1,                                           /* ginCustomStride      */     \
     NCCL_GIN_TYPE_NONE,                          /* ginType */                  \
+    false,                                       /* useRuntimeVersion */        \
 }
 // clang-format on
 
@@ -204,6 +208,7 @@ struct ncclCommProperties {
   int ginMinStride;
   ncclGinConnectionType_t ginConnectionType;
   bool ginSupport[64];
+  size_t devCommRuntimeVersionSize;
 };
 
 NCCL_EXTERN_C __host__ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* props);

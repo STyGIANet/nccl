@@ -45,6 +45,7 @@ struct ncclDevrCommCreateTask {
   struct ncclDevCommRequirements* reqs;
   struct ncclDevComm* outDevComm;
   struct ncclDevCommCompat* devCompat;
+  uint32_t deviceCodeVersion;
 };
 
 struct ncclDevrState {
@@ -99,8 +100,8 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* ptr, siz
                                            ncclWindow_t* outWinDev);
 
 ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCommRequirements* reqs,
-                                        struct ncclDevComm* outDevComm, bool isInternal = false,
-                                        struct ncclDevCommCompat* devCompat = nullptr);
+                                        struct ncclDevComm* outDevComm, bool isInternal,
+                                        struct ncclDevCommCompat* devCompat, uint32_t deviceCodeVersion);
 void freeDevCommRequirements(struct ncclDevCommRequirements* reqs);
 
 bool ncclDevrWindowIsMultiSegment(struct ncclDevrWindow* win);

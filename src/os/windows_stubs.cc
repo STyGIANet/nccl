@@ -199,10 +199,11 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 }
 
 ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequirements const* reqs,
-                                 struct ncclDevComm* devComm) {
+                                 struct ncclDevComm* devComm, uint32_t deviceCodeVersion) {
   (void)comm;
   (void)reqs;
   (void)devComm;
+  (void)deviceCodeVersion;
   return ncclSuccess;
 }
 

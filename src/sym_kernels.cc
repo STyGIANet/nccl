@@ -241,7 +241,8 @@ ncclResult_t ncclSymkInitOnce(struct ncclComm* comm) {
       reqs.ginConnectionType = NCCL_GIN_CONNECTION_RAIL;
     }
 
-    NCCLCHECK(ncclDevrCommCreateInternal(comm, &reqs, &symk->kcomm.devComm, true));
+    NCCLCHECK(ncclDevrCommCreateInternal(comm, &reqs, &symk->kcomm.devComm, /*isInternal=*/true, /*devCompat=*/nullptr,
+                                         /*deviceCodeVersion=*/NCCL_VERSION_CODE));
   }
   return ncclSuccess;
 }

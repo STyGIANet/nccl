@@ -29,6 +29,7 @@ NCCL_PARAM(WinStride, "WIN_STRIDE", -1);
 NCCL_PARAM(EnableVersionCheck, "ENABLE_VERSION_CHECK", 1);
 NCCL_PARAM(ElasticBufferRegister, "ELASTIC_BUFFER_REGISTER", 1);
 NCCL_PARAM(SymReuseSysmemHandles, "SYM_REUSE_SYSMEM_HANDLES", 0);
+NCCL_PARAM(DevApiJit, "DEV_API_JIT", 0);
 
 extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v22907, ncclDevCommCompat_v23000,
   ncclDevCommCompat_v23100;
@@ -1091,7 +1092,7 @@ void ncclDevCommDump(struct ncclDevComm* devComm) {
 
 ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCommRequirements* reqs,
                                         struct ncclDevComm* outDevComm, bool isInternal,
-                                        struct ncclDevCommCompat* devCompat) {
+                                        struct ncclDevCommCompat* devCompat, uint32_t deviceCodeVersion) {
   ncclResult_t ret = ncclSuccess;
   struct ncclDevrState* devr = &comm->devrState;
   struct ncclTeam world = ncclTeamWorld(comm);
@@ -1177,7 +1178,7 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
 
   memset(outDevComm, 0, sizeof(*outDevComm));
   outDevComm->magic = NCCL_API_MAGIC;
-  outDevComm->version = reqs->version;
+  outDevComm->version = deviceCodeVersion;
   outDevComm->rank = comm->rank;
   outDevComm->nRanks = comm->nRanks;
   outDevComm->nRanks_rcp32 = idivRcp32(comm->nRanks);
@@ -1253,7 +1254,7 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
   if (devr->ginEnabled) {
     reqs->ginSignalCount = ginSignalTotal;
     reqs->ginCounterCount = ginCounterTotal;
-    NCCLCHECKGOTO(ncclGinDevCommSetup(comm, reqs, outDevComm), ret, fail);
+    NCCLCHECKGOTO(ncclGinDevCommSetup(comm, reqs, outDevComm, deviceCodeVersion), ret, fail);
   }
 
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail);
@@ -1445,21 +1446,21 @@ bool ncclDevrWindowHasSysmemSegment(struct ncclDevrWindow* win) {
 
 // Returns ncclInvalidUsage if the compiled version is greater than the runtime version
 // and NCCL_ENABLE_VERSION_CHECK=0 is not set
-static ncclResult_t getNcclVersionCompat(int compiledVersion, struct ncclDevCommCompat** devCompatPtr) {
+static ncclResult_t getNcclVersionCompat(int version, struct ncclDevCommCompat** devCompatPtr) {
   *devCompatPtr = nullptr;
 
-  if (compiledVersion > NCCL_VERSION_CODE && ncclParamEnableVersionCheck()) {
+  if (version > NCCL_VERSION_CODE && ncclParamEnableVersionCheck()) {
     char compiledBuf[16], runtimeBuf[16];
     WARN("NCCL library is too old. This application was compiled with NCCL version %s, but is running with NCCL "
          "library version %s.",
-         ncclVersionToString(compiledVersion, compiledBuf, sizeof(compiledBuf)),
+         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
          ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
     return ncclInvalidUsage;
   }
 
   struct ncclDevCommCompat* devCompat = nullptr;
   for (int i = 0; devCommCompat[i]; i++) {
-    if (compiledVersion >= devCommCompat[i]->minVersion && compiledVersion <= devCommCompat[i]->maxVersion) {
+    if (version >= devCommCompat[i]->minVersion && version <= devCommCompat[i]->maxVersion) {
       devCompat = devCommCompat[i];
       break;
     }
@@ -1468,7 +1469,7 @@ static ncclResult_t getNcclVersionCompat(int compiledVersion, struct ncclDevComm
     char compiledBuf[16], runtimeBuf[16];
     WARN("NCCL library is not backwards compatible. This application was compiled with NCCL version %s, but is running "
          "with NCCL library version %s.",
-         ncclVersionToString(compiledVersion, compiledBuf, sizeof(compiledBuf)),
+         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
          ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
     return ncclInvalidUsage;
   }
@@ -1528,6 +1529,7 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
         if (t >= 0 && t < NCCL_GIN_MAX_TYPES) props->ginSupport[t] = true;
       }
     }
+    props->devCommRuntimeVersionSize = sizeof(ncclDevComm_t);
   }
 
   if (devCompat->commPropertiesFilter) {
@@ -1548,8 +1550,13 @@ ncclResult_t ncclDevCommCreate(ncclComm_t comm, struct ncclDevCommRequirements c
     return ncclInvalidUsage;
   }
 
+  uint32_t deviceCodeVersion = reqs->version;
+  if (ncclParamDevApiJit() == 1 || (reqs->version >= NCCL_VERSION(2, 31, 0) && reqs->useRuntimeVersion)) {
+    deviceCodeVersion = NCCL_VERSION_CODE;
+  }
+
   struct ncclDevCommCompat* devCompat = nullptr;
-  NCCLCHECK(getNcclVersionCompat(reqs->version, &devCompat));
+  NCCLCHECK(getNcclVersionCompat(deviceCodeVersion, &devCompat));
 
   ncclResult_t ret = ncclSuccess;
   int saveDev;
@@ -1577,6 +1584,7 @@ ncclResult_t ncclDevCommCreate(ncclComm_t comm, struct ncclDevCommRequirements c
   }
   task->outDevComm = outDevComm;
   task->devCompat = devCompat;
+  task->deviceCodeVersion = deviceCodeVersion;
   ncclIntruQueueEnqueue(&comm->devrState.commCreateTaskQueue, task);
   ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);
 
