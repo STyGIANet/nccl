@@ -7,10 +7,14 @@
 .PHONY: all clean
 
 EMIT_LLVM_IR ?= 0
+NCCL_EMIT_LTO_IR ?= 0
 
 default: src.build
 ifneq ($(EMIT_LLVM_IR), 0)
-default: ir.build
+default: ir.llvm_ir
+endif
+ifneq ($(NCCL_EMIT_LTO_IR), 0)
+default: ir.ltoir
 endif
 
 install: src.install
@@ -20,6 +24,8 @@ TARGETS := src pkg nccl4py ir
 clean: ${TARGETS:%=%.clean}
 examples.build: src.build
 ir.build: src.build
+ir.llvm_ir: src.build
+ir.ltoir: src.build
 LICENSE_FILES := LICENSE.txt
 LICENSE_TARGETS := $(LICENSE_FILES:%=$(BUILDDIR)/%)
 lic: $(LICENSE_TARGETS)

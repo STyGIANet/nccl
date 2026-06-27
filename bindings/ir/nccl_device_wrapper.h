@@ -28,11 +28,16 @@
 #undef NCCL_DEVICE_INLINE
 #undef NCCL_HOST_DEVICE_INLINE
 #ifdef __CUDACC__
+#if defined(__NCCL_DEVICE_LTOIR_LIB__)
+#define NCCL_DEVICE_INLINE __device__ __inline_hint__
+#define NCCL_HOST_DEVICE_INLINE __host__ __device__ __inline_hint__
+#elif defined(__clang_llvm_bitcode_lib__)
 #define NCCL_DEVICE_INLINE __device__ __attribute__((always_inline))
 #define NCCL_HOST_DEVICE_INLINE __host__ __device__ __attribute__((always_inline))
 #else
 #define NCCL_DEVICE_INLINE
 #define NCCL_HOST_DEVICE_INLINE inline __attribute__((always_inline))
+#endif
 #endif
 
 #include "nccl_device/coop.h"
