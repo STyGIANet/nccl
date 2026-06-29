@@ -64,6 +64,7 @@ struct ncclRmaWaitSignalOp {
   int npeers;
   int* waitPeers;
   int* waitSignals;
+  int* waitSignalIdxs;
   // Local flush in graph mode
   int needFlush;
 };
@@ -139,9 +140,9 @@ struct ncclRmaProxyCtx {
 
   // Signal memory layout and management
   // Each RMA context allocates a signal buffer with the following layout:
-  // - Offsets [0 to nRanks*8-1]: per-rank distinct signals (8 bytes per rank)
-  // - Offset [nRanks*8]: shared aggregate signal counter (8 bytes)
-  // Total signal buffer size: (nRanks + 1) * 8 bytes
+  // - One set of nRanks per-rank signal counters per signal index
+  // - Slot within this context is signalIdx * nRanks + rank
+  // Total signal buffer size: (numRmaSig * nRanks) * 8 bytes
   CUmemGenericAllocationHandle signalsCumemhandle;
   void* signalsMhandle;
   uint64_t* signalsDev;
@@ -153,6 +154,7 @@ struct ncclRmaProxyCtx {
   struct ncclIntruQueue<struct ncclRmaProxyDesc, &ncclRmaProxyDesc::next>* persistentQueues;
 
   // CPU-accessible signal is required as proxy needs to poll on the signal values
+  // Graph/persistent signals use the same per-(signalIdx, rank) layout.
   void* cpuAccessSignalsGdrHandle;
   void* cpuAccessSignalsMhandle;
   uint64_t* cpuAccessSignals;
@@ -236,13 +238,13 @@ bool ncclRmaProxyEnqueueFull(struct ncclRmaProxyCtx* ctx, const struct ncclRmaPr
 ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx, int ctx,
                                     bool persistent, struct ncclDevrWindow* srcWin, size_t srcOff,
                                     struct ncclDevrWindow* peerWin, size_t peerOff, size_t size, int peer,
-                                    ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op);
+                                    int signalIdx, ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op);
 
 // Build a single put descriptor.
 ncclResult_t ncclRmaProxyPutBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                       struct ncclKernelPlan* plan, struct ncclDevrWindow* srcWinHost,
                                       size_t srcWinOffset, struct ncclDevrWindow* peerWinHost, size_t peerWinOffset,
-                                      size_t size, int peer, int ctx, ncclSignalMode_t signalMode,
+                                      size_t size, int peer, int ctx, int signalIdx, ncclSignalMode_t signalMode,
                                       struct ncclRmaProxyDesc* desc);
 
 // Build a put-signal-group descriptor over an array of pre-filled ops.
@@ -255,7 +257,7 @@ ncclResult_t ncclRmaProxyPutGroupBuildDesc(struct ncclComm* comm, struct ncclRma
 // Takes ownership of caller-allocated peers/nsignals arrays.
 ncclResult_t ncclRmaProxyWaitBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                        struct ncclKernelPlan* plan, int npeers, int** peers, int** nsignals,
-                                       struct ncclRmaProxyDesc* desc);
+                                       int** signalIdxs, struct ncclRmaProxyDesc* desc);
 
 // Stream-batch memop param builders for put descriptors.
 int ncclRmaProxyPutStartNumOps(bool persistent);

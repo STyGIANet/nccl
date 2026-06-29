@@ -62,7 +62,8 @@ ncclPutSignal
     ``localbuff`` must currently also be registered with :c:func:`ncclCommWindowRegister`.
     This requirement may be relaxed in a future release.
 
- The ``sigIdx`` is the signal index identifier for the operation. It must be set to 0 for now.
+ The ``sigIdx`` is the signal index identifier for the operation. Prior to NCCL 2.31, it must be set to 0.
+ Since NCCL 2.31, it may be set in the range ``[0, numRmaSig)`` (see :c:macro:`numRmaSig`).
 
  The ``ctx`` is the context identifier for the operation. It must be set to 0 for now.
 
@@ -82,7 +83,8 @@ ncclSignal
 
  Send a signal to rank ``peer`` without transferring data.
 
- The ``sigIdx`` is the signal index identifier for the operation. It must be set to 0 for now.
+ The ``sigIdx`` is the signal index identifier for the operation. Prior to NCCL 2.31, it must be set to 0.
+ Since NCCL 2.31, it may be set in the range ``[0, numRmaSig)`` (see :c:macro:`numRmaSig`).
 
  The ``ctx`` is the context identifier for the operation. It must be set to 0 for now.
 
@@ -111,7 +113,8 @@ ncclWaitSignal
 
  .. c:member:: int sigIdx
 
-  Signal index identifier. Must be set to 0 for now.
+  Signal index identifier. Prior to NCCL 2.31, it must be set to 0.
+  Since NCCL 2.31, it may be set in the range ``[0, numRmaSig)`` (see :c:macro:`numRmaSig`).
 
  .. c:member:: int ctx
 

@@ -106,6 +106,7 @@ typedef struct ncclConfig_v23100 {
   int maxP2pPeers;
   int graphStreamOrdering;
   int launchOrderImplicit;
+  int numRmaSig;
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -133,6 +134,7 @@ typedef struct ncclConfig_v23100 {
   NCCL_CONFIG_UNDEF_INT,                    /* maxP2pPeers */           \
   NCCL_CONFIG_UNDEF_INT,                    /* graphStreamOrdering */   \
   NCCL_CONFIG_UNDEF_INT,                    /* launchOrderImplicit */   \
+  NCCL_CONFIG_UNDEF_INT,                    /* numRmaSig */             \
 }
 
 /* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */

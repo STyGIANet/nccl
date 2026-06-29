@@ -301,8 +301,12 @@ struct ncclTaskRma {
 
   // Signal operations
   ncclSignalMode_t signalMode;
+  int signalIdx;
+
+  // WaitSignal operations
   int* peers;
   int* nsignals;
+  int* signalIdxs;
   int npeers;
 
   // Profiler plugin

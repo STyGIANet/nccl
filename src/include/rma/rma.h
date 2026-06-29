@@ -28,10 +28,18 @@ struct ncclRmaState {
   struct ncclRmaCeState rmaCeState;
 };
 
+// Helper functions for signal slot and offset calculations
+static inline size_t ncclRmaSignalSlot(int nRanks, int sigIdx, int rank) {
+  return (size_t)sigIdx * nRanks + rank;
+}
+
+static inline size_t ncclRmaSignalOffset(int nRanks, int sigIdx, int rank) {
+  return ncclRmaSignalSlot(nRanks, sigIdx, rank) * sizeof(uint64_t);
+}
+
 // Main RMA function declarations
 ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan);
 ncclResult_t ncclLaunchRma(struct ncclComm* comm, struct ncclKernelPlan* plan);
 ncclResult_t ncclRmaWaitSignal(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);
 ncclResult_t ncclRmaPut(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream);
-
 #endif

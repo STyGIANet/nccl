@@ -9,6 +9,7 @@
 #include "checks.h"
 #include "compiler.h"
 #include "comm.h"
+#include "rma/rma.h"
 #include "rma/rma_proxy.h"
 
 // Helper functions to manage request credits
@@ -235,8 +236,9 @@ static ncclResult_t ncclRmaProxyPollPersistDesc(ncclRma_t* ncclRma, struct ncclR
         bool signalsAllArrived = true;
         for (int i = 0; i < desc->waitSignal.npeers; i++) {
           int peerRank = desc->waitSignal.waitPeers[i];
-          uint64_t signalVal = COMPILER_ATOMIC_LOAD(&ctx->cpuAccessSignals[peerRank], std::memory_order_acquire);
-          if (signalVal < ctx->cpuAccessSignalsHost[peerRank] + desc->waitSignal.waitSignals[i]) {
+          size_t signalSlot = ncclRmaSignalSlot(ctx->comm->nRanks, desc->waitSignal.waitSignalIdxs[i], peerRank);
+          uint64_t signalVal = COMPILER_ATOMIC_LOAD(&ctx->cpuAccessSignals[signalSlot], std::memory_order_acquire);
+          if (signalVal < ctx->cpuAccessSignalsHost[signalSlot] + desc->waitSignal.waitSignals[i]) {
             signalsAllArrived = false;
             break;
           }
@@ -249,7 +251,8 @@ static ncclResult_t ncclRmaProxyPollPersistDesc(ncclRma_t* ncclRma, struct ncclR
 
           for (int i = 0; i < desc->waitSignal.npeers; i++) {
             int peerRank = desc->waitSignal.waitPeers[i];
-            ctx->cpuAccessSignalsHost[peerRank] += desc->waitSignal.waitSignals[i];
+            size_t signalSlot = ncclRmaSignalSlot(ctx->comm->nRanks, desc->waitSignal.waitSignalIdxs[i], peerRank);
+            ctx->cpuAccessSignalsHost[signalSlot] += desc->waitSignal.waitSignals[i];
           }
 
           COMPILER_ATOMIC_STORE(desc->doneSeq, (uint64_t)1, std::memory_order_release);

@@ -139,6 +139,7 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
   ncclResult_t ret = ncclSuccess;
   int* peersProxy = nullptr;
   int* nsignalsProxy = nullptr;
+  int* signalIdxsProxy = nullptr;
   struct ncclKernelPlanner* planner = &comm->planner;
 
   // Find the first non-empty context queue
@@ -172,8 +173,10 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
     // Allocate temporary arrays to hold peers and nsignals for both proxy and CE paths
     int* peersCe = ncclMemoryStackAlloc<int>(&comm->memScoped, firstTask->npeers);
     int* nsignalsCe = ncclMemoryStackAlloc<int>(&comm->memScoped, firstTask->npeers);
+    int* signalIdxsCe = ncclMemoryStackAlloc<int>(&comm->memScoped, firstTask->npeers);
     NCCLCHECKGOTO(ncclCalloc(&peersProxy, firstTask->npeers), ret, fail);
     NCCLCHECKGOTO(ncclCalloc(&nsignalsProxy, firstTask->npeers), ret, fail);
+    NCCLCHECKGOTO(ncclCalloc(&signalIdxsProxy, firstTask->npeers), ret, fail);
 
     int npeersCe = 0;
     int npeersProxy = 0;
@@ -187,11 +190,13 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
         // Add to CE list
         peersCe[npeersCe] = peerRank;
         nsignalsCe[npeersCe] = firstTask->nsignals[i];
+        signalIdxsCe[npeersCe] = firstTask->signalIdxs[i];
         npeersCe++;
       } else {
         // Add to Proxy list
         peersProxy[npeersProxy] = peerRank;
         nsignalsProxy[npeersProxy] = firstTask->nsignals[i];
+        signalIdxsProxy[npeersProxy] = firstTask->signalIdxs[i];
         npeersProxy++;
       }
     }
@@ -203,8 +208,10 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
       waitSignalTaskCe->func = ncclFuncWaitSignal;
       waitSignalTaskCe->ctx = firstTask->ctx;
       waitSignalTaskCe->signalMode = firstTask->signalMode;
+      waitSignalTaskCe->signalIdx = 0; // This is irrelevant for waitSignal operations
       waitSignalTaskCe->peers = peersCe;
       waitSignalTaskCe->nsignals = nsignalsCe;
+      waitSignalTaskCe->signalIdxs = signalIdxsCe;
       waitSignalTaskCe->npeers = npeersCe;
       ncclIntruQueueEnqueue(&plan->rmaTaskQueueCe, waitSignalTaskCe);
       plan->rmaArgs->nRmaTasksCe = 1;
@@ -219,8 +226,10 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
       waitSignalTaskProxy->func = ncclFuncWaitSignal;
       waitSignalTaskProxy->ctx = firstTask->ctx;
       waitSignalTaskProxy->signalMode = firstTask->signalMode;
+      waitSignalTaskProxy->signalIdx = 0; // This is irrelevant for waitSignal operations
       waitSignalTaskProxy->peers = peersProxy;
       waitSignalTaskProxy->nsignals = nsignalsProxy;
+      waitSignalTaskProxy->signalIdxs = signalIdxsProxy;
       waitSignalTaskProxy->npeers = npeersProxy;
       ncclIntruQueueEnqueue(&plan->rmaTaskQueueProxy, waitSignalTaskProxy);
       plan->rmaArgs->nRmaTasksProxy = 1;
@@ -229,6 +238,8 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
       peersProxy = nullptr;
       free(nsignalsProxy);
       nsignalsProxy = nullptr;
+      free(signalIdxsProxy);
+      signalIdxsProxy = nullptr;
       plan->rmaArgs->nRmaTasksProxy = 0;
     }
 
@@ -288,5 +299,6 @@ exit:
 fail:
   free(peersProxy);
   free(nsignalsProxy);
+  free(signalIdxsProxy);
   goto exit;
 }

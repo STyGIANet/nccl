@@ -26,7 +26,7 @@
 ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx, int ctx,
                                     bool persistent, struct ncclDevrWindow* srcWin, size_t srcOff,
                                     struct ncclDevrWindow* peerWin, size_t peerOff, size_t size, int peer,
-                                    ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op) {
+                                    int signalIdx, ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op) {
   op->srcOff = ncclDevrGetWinOffset(srcWin) + srcOff;
   op->srcHandle = ncclDevrGetRmaWin(srcWin, ctx);
   op->dstOff = ncclDevrGetWinOffset(peerWin) + peerOff;
@@ -39,7 +39,7 @@ ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCt
     op->signal.op = 0;
   } else if (signalMode == NCCL_SIGNAL) {
     op->signal.op = NCCL_NET_SIGNAL_OP_ADD;
-    op->signal.offset = comm->rank * sizeof(uint64_t);
+    op->signal.offset = ncclRmaSignalOffset(comm->nRanks, signalIdx, comm->rank);
     op->signal.signalMhandle = persistent ? rmaProxyCtx->cpuAccessSignalsMhandle : rmaProxyCtx->signalsMhandle;
     op->signal.val = 1;
   }
@@ -50,7 +50,7 @@ ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCt
 ncclResult_t ncclRmaProxyPutBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                       struct ncclKernelPlan* plan, struct ncclDevrWindow* srcWinHost,
                                       size_t srcWinOffset, struct ncclDevrWindow* peerWinHost, size_t peerWinOffset,
-                                      size_t size, int peer, int ctx, ncclSignalMode_t signalMode,
+                                      size_t size, int peer, int ctx, int signalIdx, ncclSignalMode_t signalMode,
                                       struct ncclRmaProxyDesc* desc) {
   ncclResult_t ret = ncclSuccess;
   bool persistent = plan->persistent;
@@ -62,7 +62,7 @@ ncclResult_t ncclRmaProxyPutBuildDesc(struct ncclComm* comm, struct ncclRmaProxy
 
   // Inner-struct fields shared with the group builder.
   NCCLCHECKGOTO(ncclRmaProxyPutBuildOp(comm, rmaProxyCtx, ctx, persistent, srcWinHost, srcWinOffset, peerWinHost,
-                                       peerWinOffset, size, peer, signalMode, &desc->putSignal),
+                                       peerWinOffset, size, peer, signalIdx, signalMode, &desc->putSignal),
                 ret, fail);
 
   // Desc-level seq + persist state: per-peer slot for single puts.
@@ -166,13 +166,13 @@ static ncclResult_t ncclRmaProxyPutDescFromTask(struct ncclComm* comm, struct nc
                                                 struct ncclRmaProxyDesc* desc) {
   return ncclRmaProxyPutBuildDesc(comm, rmaProxyCtx, plan, task->srcWinHost, task->srcWinOffset, task->peerWinHost,
                                   task->peerWinOffset, task->count * ncclTypeSize(task->datatype), task->peer,
-                                  task->ctx, task->signalMode, desc);
+                                  task->ctx, task->signalIdx, task->signalMode, desc);
 }
 
 // Build a wait-signal descriptor.
 ncclResult_t ncclRmaProxyWaitBuildDesc(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                        struct ncclKernelPlan* plan, int npeers, int** peers, int** nsignals,
-                                       struct ncclRmaProxyDesc* desc) {
+                                       int** signalIdxs, struct ncclRmaProxyDesc* desc) {
   ncclResult_t ret = ncclSuccess;
   bool persistent = plan->persistent;
 
@@ -182,8 +182,10 @@ ncclResult_t ncclRmaProxyWaitBuildDesc(struct ncclComm* comm, struct ncclRmaProx
   // Transfer ownership: desc takes the arrays, caller's locals are nulled.
   desc->waitSignal.waitPeers = *peers;
   desc->waitSignal.waitSignals = *nsignals;
+  desc->waitSignal.waitSignalIdxs = *signalIdxs;
   *peers = nullptr;
   *nsignals = nullptr;
+  *signalIdxs = nullptr;
   desc->persistPlan = nullptr;
   desc->persistDescValid = false;
   if (persistent) {
@@ -221,7 +223,8 @@ fail:
 static ncclResult_t ncclRmaProxyWaitDescFromTask(struct ncclComm* comm, struct ncclRmaProxyCtx* rmaProxyCtx,
                                                  struct ncclKernelPlan* plan, struct ncclTaskRma* task,
                                                  struct ncclRmaProxyDesc* desc) {
-  return ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, task->npeers, &task->peers, &task->nsignals, desc);
+  return ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, task->npeers, &task->peers, &task->nsignals,
+                                   &task->signalIdxs, desc);
 }
 
 // ============================================================================
@@ -232,6 +235,7 @@ static ncclResult_t ncclRmaProxyDestroyDescNonPersistent(struct ncclRmaProxyDesc
   if (desc->rmaDescType == ncclRmaDescTypeWaitSignal) {
     free(desc->waitSignal.waitPeers);
     free(desc->waitSignal.waitSignals);
+    free(desc->waitSignal.waitSignalIdxs);
   } else if (desc->rmaDescType == ncclRmaDescTypePutSignalGroup) {
     free(desc->putSignalGroup.ops);
   }
@@ -249,6 +253,7 @@ static ncclResult_t ncclRmaProxyDestroyDescPersistent(struct ncclComm* comm, str
   if (desc->rmaDescType == ncclRmaDescTypeWaitSignal) {
     free(desc->waitSignal.waitPeers);
     free(desc->waitSignal.waitSignals);
+    free(desc->waitSignal.waitSignalIdxs);
   } else if (desc->rmaDescType == ncclRmaDescTypePutSignalGroup) {
     free(desc->putSignalGroup.ops);
   }
@@ -516,13 +521,14 @@ ncclResult_t ncclRmaProxyWaitParams(struct ncclRmaProxyCtx* rmaProxyCtx, struct 
     int npeers = desc->waitSignal.npeers;
     int* peers = desc->waitSignal.waitPeers;
     int* nsignals = desc->waitSignal.waitSignals;
+    int* signalIdxs = desc->waitSignal.waitSignalIdxs;
     for (int i = 0; i < npeers; i++) {
-      int peer = peers[i];
-      uint64_t waitValue = rmaProxyCtx->signalsHost[peer] + nsignals[i];
-      rmaProxyCtx->signalsHost[peer] = waitValue;
+      size_t signalSlot = ncclRmaSignalSlot(rmaProxyCtx->comm->nRanks, signalIdxs[i], peers[i]);
+      uint64_t waitValue = rmaProxyCtx->signalsHost[signalSlot] + nsignals[i];
+      rmaProxyCtx->signalsHost[signalSlot] = waitValue;
 
       params[i].waitValue.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
-      params[i].waitValue.address = (CUdeviceptr)&rmaProxyCtx->signalsDev[peer];
+      params[i].waitValue.address = (CUdeviceptr)&rmaProxyCtx->signalsDev[signalSlot];
       params[i].waitValue.value64 = waitValue;
       params[i].waitValue.flags = CU_STREAM_WAIT_VALUE_GEQ;
     }
@@ -700,6 +706,7 @@ exit:
   }
   free(task->peers);
   free(task->nsignals);
+  free(task->signalIdxs);
 exit_non_wait_task:
   free(batchParams);
   ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);

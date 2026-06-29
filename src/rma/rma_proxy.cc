@@ -104,7 +104,8 @@ static ncclResult_t ncclRmaProxyCtxAlloc(struct ncclComm* comm, ncclRma_t* rmaCo
   // The clean up in case of failure will be done by the ncclRmaProxyDestroyContext function invoked by the caller.
   // Allocate the signals on the GPU and then register the memory region with the RMA plugin.
   // Enforcing strong ordering on the signals mr is vital to ensure ordering between puts and signals.
-  size_t signalsBufSize = (comm->nRanks + 1) * sizeof(uint64_t);
+  size_t signalSlots = (size_t)comm->nRanks * comm->config.numRmaSig;
+  size_t signalsBufSize = signalSlots * sizeof(uint64_t);
   NCCLCHECK(ncclCuMemAlloc((void**)&rmaProxyCtx->signalsDev, &rmaProxyCtx->signalsCumemhandle, CU_MEM_HANDLE_TYPE_NONE,
                            signalsBufSize, comm->memManager));
   CUDACHECK(cudaMemset(rmaProxyCtx->signalsDev, 0, signalsBufSize));
@@ -165,10 +166,11 @@ static ncclResult_t ncclRmaProxyCtxAlloc(struct ncclComm* comm, ncclRma_t* rmaCo
 static ncclResult_t ncclRmaProxyCtxAllocGraph(struct ncclComm* comm, ncclRma_t* rmaComm,
                                               struct ncclRmaProxyCtx* rmaProxyCtx) {
   // The clean up in case of failure will be done by the ncclRmaProxyDestroyContext function invoked by the caller.
-  size_t signalsBufSize = (comm->nRanks + 1) * sizeof(uint64_t);
+  size_t signalSlots = (size_t)comm->nRanks * comm->config.numRmaSig;
+  size_t signalsBufSize = signalSlots * sizeof(uint64_t);
   // Allocate the CPU-accessible signal for graph capture and then register the memory region with the RMA plugin.
-  NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->cpuAccessSignals, &rmaProxyCtx->cpuAccessSignalsDev, comm->nRanks + 1,
-                                  0, &rmaProxyCtx->cpuAccessSignalsGdrHandle, comm->memManager));
+  NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->cpuAccessSignals, &rmaProxyCtx->cpuAccessSignalsDev, signalSlots, 0,
+                                  &rmaProxyCtx->cpuAccessSignalsGdrHandle, comm->memManager));
   int cpuAccessSignalsType = (rmaProxyCtx->cpuAccessSignalsGdrHandle != NULL) ? NCCL_PTR_CUDA : NCCL_PTR_HOST;
   NCCLCHECK(ncclRmaProxyRegMrSym(rmaComm, rmaProxyCtx->rmaCollComm, rmaProxyCtx->props,
                                  rmaProxyCtx->cpuAccessSignalsDev, signalsBufSize, cpuAccessSignalsType,

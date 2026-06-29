@@ -849,6 +849,7 @@ static ncclResult_t ncclRailSync(struct ncclComm* comm, struct ncclRmaProxyCtx* 
 
   int* railPeers = nullptr;
   int* railSigOnes = nullptr;
+  int* railSignalIdxs = nullptr;
   // One signal-only put op per rail peer, packed into a single group desc.
   struct ncclRmaPutSignalOp* groupOps = nullptr;
   struct ncclRmaProxyDesc* groupDesc = nullptr;
@@ -858,6 +859,7 @@ static ncclResult_t ncclRailSync(struct ncclComm* comm, struct ncclRmaProxyCtx* 
 
   NCCLCHECKGOTO(ncclCalloc(&railPeers, nRemoteNodes), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&railSigOnes, nRemoteNodes), ret, fail);
+  NCCLCHECKGOTO(ncclCalloc(&railSignalIdxs, nRemoteNodes), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&groupOps, nRemoteNodes), ret, fail);
 
   // Build one signal-only put op per rail peer
@@ -872,7 +874,7 @@ static ncclResult_t ncclRailSync(struct ncclComm* comm, struct ncclRmaProxyCtx* 
       NCCLCHECKGOTO(ncclRmaProxyPutBuildOp(comm, rmaProxyCtx, ctx, persistent,
                                            /*srcWin=*/nullptr, /*srcOff=*/0,
                                            /*peerWin=*/nullptr, /*peerOff=*/0,
-                                           /*size=*/0, railPeer, NCCL_SIGNAL, &groupOps[idx]),
+                                           /*size=*/0, railPeer, /*signalIdx=*/0, NCCL_SIGNAL, &groupOps[idx]),
                     ret, fail);
       idx++;
     }
@@ -885,7 +887,8 @@ static ncclResult_t ncclRailSync(struct ncclComm* comm, struct ncclRmaProxyCtx* 
 
   // Build one wait descriptor that covers all nRemoteNodes inbound signals.
   NCCLCHECKGOTO(ncclCalloc(&waitDesc, 1), ret, fail);
-  NCCLCHECKGOTO(ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, nRemoteNodes, &railPeers, &railSigOnes, waitDesc),
+  NCCLCHECKGOTO(ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, nRemoteNodes, &railPeers, &railSigOnes,
+                                          &railSignalIdxs, waitDesc),
                 ret, fail);
 
   // ------------------------------------------------------------------
@@ -923,6 +926,7 @@ exit:
   free(groupOps);
   free(railPeers);
   free(railSigOnes);
+  free(railSignalIdxs);
   return ret;
 fail:
   goto exit;
@@ -936,16 +940,20 @@ static ncclResult_t ncclProxyWaitOnePeer(struct ncclComm* comm, struct ncclRmaPr
 
   int* waitPeers = nullptr;
   int* waitSigCounts = nullptr;
+  int* waitSignalIdxs = nullptr;
   struct ncclRmaProxyDesc* waitDesc = nullptr;
   CUstreamBatchMemOpParams* waitBatch = nullptr;
 
   NCCLCHECKGOTO(ncclCalloc(&waitPeers, 1), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&waitSigCounts, 1), ret, fail);
+  NCCLCHECKGOTO(ncclCalloc(&waitSignalIdxs, 1), ret, fail);
   waitPeers[0] = peer;
   waitSigCounts[0] = nsignals;
 
   NCCLCHECKGOTO(ncclCalloc(&waitDesc, 1), ret, fail);
-  NCCLCHECKGOTO(ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, 1, &waitPeers, &waitSigCounts, waitDesc), ret, fail);
+  NCCLCHECKGOTO(ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, 1, &waitPeers, &waitSigCounts, &waitSignalIdxs,
+                                          waitDesc),
+                ret, fail);
 
   {
     int waitOps = ncclRmaProxyWaitNumStreamOps(waitDesc);
@@ -960,6 +968,7 @@ exit:
   if (waitDesc != nullptr) (void)ncclRmaProxyDestroyDesc(comm, &waitDesc);
   free(waitPeers);
   free(waitSigCounts);
+  free(waitSignalIdxs);
   return ret;
 fail:
   goto exit;
@@ -1047,7 +1056,8 @@ ncclResult_t ncclHierCeAllGather(struct ncclComm* comm, struct ncclKernelPlan* p
         size_t off = chunkPlan.chunkOff[c];
 
         NCCLCHECKGOTO(ncclRmaProxyPutBuildOp(comm, rmaProxyCtx, ctx, persistent, sendWin, srcWinOffset + off, recvWin,
-                                             peerWinOffset + off, subBytes, railPeer, NCCL_SIGNAL, &groupOps[c]),
+                                             peerWinOffset + off, subBytes, railPeer, /*signalIdx=*/0, NCCL_SIGNAL,
+                                             &groupOps[c]),
                       ret, fail);
       }
     }
@@ -1208,6 +1218,7 @@ ncclResult_t ncclHierCeAlltoAll(struct ncclComm* comm, struct ncclKernelPlan* pl
   // Aggregate inbound wait descriptor (covers all remote peers).
   int* waitPeers = nullptr;
   int* waitSigCounts = nullptr;
+  int* waitSignalIdxs = nullptr;
   struct ncclRmaProxyDesc* waitDesc = nullptr;
   CUstreamBatchMemOpParams* waitBatch = nullptr;
   // Intra-node alltoall scratch.
@@ -1254,7 +1265,8 @@ ncclResult_t ncclHierCeAlltoAll(struct ncclComm* comm, struct ncclKernelPlan* pl
           size_t off = chunkPlan.chunkOff[c];
 
           NCCLCHECKGOTO(ncclRmaProxyPutBuildOp(comm, rmaProxyCtx, ctx, persistent, sendWin, srcWinOffset + off, recvWin,
-                                               peerWinOffset + off, subBytes, peer, NCCL_SIGNAL, &groupOps[c]),
+                                               peerWinOffset + off, subBytes, peer, /*signalIdx=*/0, NCCL_SIGNAL,
+                                               &groupOps[c]),
                         ret, fail);
         }
         p++;
@@ -1302,6 +1314,7 @@ ncclResult_t ncclHierCeAlltoAll(struct ncclComm* comm, struct ncclKernelPlan* pl
   {
     NCCLCHECKGOTO(ncclCalloc(&waitPeers, numRemotePeers), ret, fail);
     NCCLCHECKGOTO(ncclCalloc(&waitSigCounts, numRemotePeers), ret, fail);
+    NCCLCHECKGOTO(ncclCalloc(&waitSignalIdxs, numRemotePeers), ret, fail);
 
     int p = 0;
     for (int s = 1; s < nNodes; s++) {
@@ -1315,7 +1328,7 @@ ncclResult_t ncclHierCeAlltoAll(struct ncclComm* comm, struct ncclKernelPlan* pl
 
     NCCLCHECKGOTO(ncclCalloc(&waitDesc, 1), ret, fail);
     NCCLCHECKGOTO(ncclRmaProxyWaitBuildDesc(comm, rmaProxyCtx, plan, numRemotePeers, &waitPeers, &waitSigCounts,
-                                            waitDesc),
+                                            &waitSignalIdxs, waitDesc),
                   ret, fail);
 
     int waitOps = ncclRmaProxyWaitNumStreamOps(waitDesc);
@@ -1352,6 +1365,7 @@ exit:
   }
   free(waitPeers);
   free(waitSigCounts);
+  free(waitSignalIdxs);
   ncclHierCollFreeChunkPlan(&chunkPlan);
   return ret;
 fail:

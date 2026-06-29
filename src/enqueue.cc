@@ -2694,9 +2694,9 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     return ncclInvalidArgument;
   }
 
-  // Check if signal index is valid (must be 0 for now)
-  if (info->sigIdx != 0) {
-    WARN("Signal index %d is invalid (must be 0)", info->sigIdx);
+  // Check if signal index is valid
+  if (info->sigIdx < 0 || info->sigIdx >= comm->config.numRmaSig) {
+    WARN("Signal index %d is invalid (must be in [0, %d))", info->sigIdx, comm->config.numRmaSig);
     return ncclInvalidArgument;
   }
 
@@ -2763,8 +2763,9 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
         WARN("ncclWaitSignal: descriptor %d has invalid opCnt %d", i, info->signalDescs[i].opCnt);
         return ncclInvalidArgument;
       }
-      if (info->signalDescs[i].sigIdx != 0) {
-        WARN("ncclWaitSignal: descriptor %d has invalid sigIdx %d (must be 0)", i, info->signalDescs[i].sigIdx);
+      if (info->signalDescs[i].sigIdx < 0 || info->signalDescs[i].sigIdx >= comm->config.numRmaSig) {
+        WARN("ncclWaitSignal: descriptor %d has invalid sigIdx %d (must be in [0, %d))", i, info->signalDescs[i].sigIdx,
+             comm->config.numRmaSig);
         return ncclInvalidArgument;
       }
       if (info->signalDescs[i].ctx != 0) {
@@ -2802,15 +2803,18 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     t->peerWinOffset = 0;
     t->peerWinHost = NULL;
     t->signalMode = NCCL_SIGNAL;
+    t->signalIdx = 0;
 
     // Convert descriptors to peers and nsignals arrays
     t->npeers = info->nDesc;
     t->peers = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
     t->nsignals = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
+    t->signalIdxs = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
 
     for (int i = 0; i < info->nDesc; i++) {
       t->peers[i] = info->signalDescs[i].peer;
       t->nsignals[i] = info->signalDescs[i].opCnt;
+      t->signalIdxs[i] = info->signalDescs[i].sigIdx;
     }
 
     t->eActivationMask = COMPILER_ATOMIC_LOAD(&ncclProfilerEventMask, std::memory_order_relaxed);
@@ -2847,6 +2851,7 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
       t->datatype = info->datatype;
       t->bytes = chunkBytes;
       t->ctx = info->ctx;
+      t->signalIdx = info->sigIdx;
       t->peer = info->root;
       t->peerWinOffset = info->peerWinOffset + chunkOffset;
       t->peerWinHost = peerWinHost;
@@ -2861,6 +2866,7 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
       }
       t->peers = NULL;
       t->nsignals = NULL;
+      t->signalIdxs = NULL;
       t->npeers = 0;
 
       t->eActivationMask = COMPILER_ATOMIC_LOAD(&ncclProfilerEventMask, std::memory_order_relaxed);

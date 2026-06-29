@@ -337,6 +337,15 @@ ncclConfig_t
 
   Set the maximum number of peers any rank will concurrently communicate with using P2P communication. Setting this value will influence all send/recv and send/recv-based collectives (all-to-all, scatter, gather). Values less than one or greater than the number of ranks will default to the number of ranks in the communicator.
 
+ .. c:macro:: numRmaSig
+
+  (since 2.31)
+
+  Set the number of one-sided RMA signal indexes available per context. The default
+  value is ``1``.
+  Host one-sided RMA operations such as :c:func:`ncclPutSignal`, :c:func:`ncclSignal`,
+  and :c:func:`ncclWaitSignal` use ``sigIdx`` values in the range ``[0, numRmaSig)``.
+
 .. _ncclsiminfo:
 
 ncclSimInfo_t
