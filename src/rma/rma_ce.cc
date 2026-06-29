@@ -42,7 +42,7 @@ ncclResult_t ncclRmaCeInit(struct ncclComm* comm) {
     ncclWindow_vidmem* signalsWinDev;
     ncclWindow_vidmem* signalsWinDevHost;
 
-    NCCLCHECKGOTO(ncclMemAlloc((void**)&signalsDevBase, signalsBufSize), ret, fail);
+    NCCLCHECKGOTO(ncclCudaCalloc(&signalsDevBase, 3 * nRanks + 2, comm->memManager), ret, fail);
     NCCLCHECKGOTO(ncclDevrWindowRegisterInGroup(comm, signalsDevBase, signalsBufSize, NCCL_WIN_COLL_SYMMETRIC,
                                                 &signalsWinDev),
                   ret, fail);
@@ -93,7 +93,7 @@ exit:
   free(ackInitHost);
   return ret;
 fail:
-  if (signalsDevBase) ncclMemFree(signalsDevBase);
+  if (signalsDevBase) ncclCudaFree(signalsDevBase, comm->memManager);
   goto exit;
 }
 
@@ -134,7 +134,7 @@ ncclResult_t ncclRmaCeFinalize(struct ncclComm* comm) {
     if (ceCtx->signalsWin) NCCLCHECKGOTO(ncclCommWindowDeregister(comm, ceCtx->signalsWin->vidmem), ret, fail);
 
     // Free signal device memory
-    if (ceCtx->signalsDev) NCCLCHECKGOTO(ncclMemFree(ceCtx->signalsDev), ret, fail);
+    if (ceCtx->signalsDev) NCCLCHECKGOTO(ncclCudaFree(ceCtx->signalsDev, comm->memManager), ret, fail);
 
     // Free the context itself
     free(ceCtx);
