@@ -1158,7 +1158,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
       goto fail;
     }
     struct ncclComm* comm0 = comm->peerInfo[intraProcRank0].comm;
-    assert(intraProcRank == 0 ? comm == comm0 : true);
+    if (intraProcRank == 0 && comm != comm0) {
+      WARN("Intra-process rank 0 communicator mismatch: comm %p intraComm0 %p", comm, comm0);
+      ret = ncclInternalError;
+      goto fail;
+    }
     comm->intraComm0 = comm0;
     comm->intraRank = intraProcRank;
     comm->intraRanks = intraProcRanks;
@@ -2931,7 +2935,6 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
     ncclComm_t intracomm0 = comm->intraComm0;
     int* finalizeRankCnt = &intracomm0->finalizeRankCnt;
 
-    assert(intracomm0 != NULL && finalizeRankCnt != NULL);
     curRankCnt = COMPILER_ATOMIC_ADD_FETCH(finalizeRankCnt, 1, std::memory_order_acq_rel);
     if (curRankCnt == intraRanks) {
       ncclComm_t curIntraComm;

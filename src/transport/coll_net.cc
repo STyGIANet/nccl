@@ -11,7 +11,6 @@
 #include "proxy.h"
 #include "gdrwrap.h"
 #include "transport.h"
-#include "assert.h"
 #include "bootstrap.h"
 #include "channel.h"
 #include "register_inline.h"
@@ -1443,8 +1442,14 @@ static ncclResult_t sendProxyRegBuffer(struct ncclProxyConnection* connection, s
   ncclResult_t ret = ncclSuccess;
   bool needReg = true;
 
-  assert(reqSize == sizeof(struct collnetRegInfo));
-  assert(respSize == sizeof(void*));
+  if (reqSize != sizeof(struct collnetRegInfo)) {
+    WARN("Invalid CollNet register request size %d, expected %zu", reqSize, sizeof(struct collnetRegInfo));
+    return ncclInternalError;
+  }
+  if (respSize != sizeof(void*)) {
+    WARN("Invalid CollNet register response size %d, expected %zu", respSize, sizeof(void*));
+    return ncclInternalError;
+  }
 
   int dmabuf_fd = -1;
 #if CUDART_VERSION >= 11070
@@ -1496,8 +1501,14 @@ static ncclResult_t recvProxyRegBuffer(struct ncclProxyConnection* connection, s
   ncclResult_t ret = ncclSuccess;
   bool needReg = true;
 
-  assert(reqSize == sizeof(struct collnetRegInfo));
-  assert(respSize == sizeof(void*));
+  if (reqSize != sizeof(struct collnetRegInfo)) {
+    WARN("Invalid CollNet register request size %d, expected %zu", reqSize, sizeof(struct collnetRegInfo));
+    return ncclInternalError;
+  }
+  if (respSize != sizeof(void*)) {
+    WARN("Invalid CollNet register response size %d, expected %zu", respSize, sizeof(void*));
+    return ncclInternalError;
+  }
   int dmabuf_fd = -1;
 #if CUDART_VERSION >= 11070
   /* DMA-BUF support */
@@ -1549,7 +1560,10 @@ static ncclResult_t sendProxyDeregBuffer(struct ncclProxyConnection* connection,
   void* handle;
   struct sendResources* resources = (struct sendResources*)(connection->transportResources);
 
-  assert(reqSize == sizeof(void*));
+  if (reqSize != sizeof(void*)) {
+    WARN("Invalid CollNet deregister request size %d, expected %zu", reqSize, sizeof(void*));
+    return ncclInternalError;
+  }
   memcpy(&handle, reqBuff, sizeof(void*));
   if (handle) {
     struct proxyMemHandle memHandle = {};
@@ -1568,7 +1582,10 @@ static ncclResult_t recvProxyDeregBuffer(struct ncclProxyConnection* connection,
   void* handle;
   struct recvResources* resources = (struct recvResources*)(connection->transportResources);
 
-  assert(reqSize == sizeof(void*));
+  if (reqSize != sizeof(void*)) {
+    WARN("Invalid CollNet deregister request size %d, expected %zu", reqSize, sizeof(void*));
+    return ncclInternalError;
+  }
   memcpy(&handle, reqBuff, sizeof(void*));
   if (handle) {
     struct proxyMemHandle memHandle = {};
@@ -1712,7 +1729,11 @@ ncclResult_t ncclCollNetSetup(ncclComm_t comm, ncclComm_t parent, struct ncclTop
     // Head GPU index is always 0
     for (int c = 0; c < collNetGraph->nChannels; c++) {
       int head = collNetGraph->intra[c * comm->localRanks + 0];
-      assert(comm->rankToNode[head] == comm->node);
+      if (comm->rankToNode[head] != comm->node) {
+        WARN("CollNet head rank %d is on node %d, expected node %d", head, comm->rankToNode[head], comm->node);
+        ret = ncclInternalError;
+        goto fail;
+      }
       uint64_t mask0 = mask;
       mask |= 1ull << comm->rankToLocalRank[head];
       if (mask != mask0) comm->collNetHeads[comm->collNetHeadsNum++] = head;

@@ -18,7 +18,6 @@
 #include "compiler.h"
 #include "os.h"
 
-#include <assert.h>
 #include <algorithm>
 #include <mutex>
 #include <chrono>
@@ -71,7 +70,7 @@ static ncclResult_t expectedProxyResponseStore(struct ncclProxyState* state, voi
   while (elem) {
     if (elem->opId == opId) {
       if (respSize != elem->respSize) {
-        WARN("Mismatched response size for opId=%p", opId);
+        WARN("Mismatched response size for opId=%p: got %d, expected %d", opId, respSize, elem->respSize);
         return ncclInternalError;
       }
 
@@ -1236,7 +1235,11 @@ ncclResult_t ncclProxyCallBlockingUDS(struct ncclComm* comm, struct ncclProxyCon
   hdr.respSize = respSize;
   hdr.opId = opId;
 
-  assert(reqSize <= sizeof(hdr.data));
+  if (reqSize > sizeof(hdr.data)) {
+    WARN("Invalid UDS proxy request size %d, expected at most %zu", reqSize, sizeof(hdr.data));
+    res = ncclInternalError;
+    goto error;
+  }
   memcpy(&hdr.data, reqBuff, reqSize);
   NCCLCHECKGOTO(ncclIpcSocketSendMsg(&ipcSock, &hdr, sizeof(hdr), reqFdtmp, proxyConn->tpRank, pidHash), res, error);
   NCCLCHECKGOTO(ncclIpcSocketRecvMsg(&ipcSock, respBuff, respSize, respFd), res, error);
@@ -1377,8 +1380,17 @@ ncclResult_t ncclPollProxyResponse(struct ncclComm* comm, struct ncclProxyConnec
       if (resp.opId != opId) {
         // Unexpected response, need to buffer the socket data
         respBuff = malloc(resp.respSize);
+        if (respBuff == NULL) {
+          WARN("Could not allocate proxy response buffer for response opId=%p expected opId=%p response size %d",
+               resp.opId, opId, resp.respSize);
+          return ncclSystemError;
+        }
       }
-      assert(respBuff != NULL);
+      if (respBuff == NULL) {
+        WARN("Proxy response buffer is NULL for response opId=%p expected opId=%p response size %d", resp.opId, opId,
+             resp.respSize);
+        return ncclInternalError;
+      }
       NCCLCHECK(ncclSocketRecv(sock, respBuff, resp.respSize));
     }
 
@@ -2020,7 +2032,10 @@ void* ncclProxyServiceUDS(void* _args) {
 
 ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union ncclSocketAddress* peerAddresses,
                            uint64_t* peerAddressesUDS) {
-  assert(comm->sharedRes->proxyState == nullptr);
+  if (comm->sharedRes->proxyState != nullptr) {
+    WARN("Proxy state is already initialized");
+    return ncclInternalError;
+  }
   comm->sharedRes->proxyState = new ncclProxyState{};
   comm->proxyState = comm->sharedRes->proxyState;
   comm->proxyState->refCount = 1;
@@ -2121,7 +2136,10 @@ ncclResult_t ncclProxyDestroy(struct ncclComm* comm) {
   struct ncclProxyState* sharedProxyState = comm->sharedRes->proxyState;
 
   if (sharedProxyState) {
-    assert(sharedProxyState->refCount == 0);
+    if (sharedProxyState->refCount != 0) {
+      WARN("Proxy state refCount is %d, expected 0", sharedProxyState->refCount);
+      return ncclInternalError;
+    }
     free(sharedProxyState->peerAddresses);
     free(sharedProxyState->peerAddressesUDS);
     free(sharedProxyState->peerSocks);

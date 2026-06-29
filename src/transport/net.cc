@@ -17,7 +17,6 @@
 #include "transport.h"
 #include "shm.h"
 #include "compiler.h"
-#include <assert.h>
 #include "register_inline.h"
 
 static_assert(sizeof(ncclNetHandle_t) <= CONNECT_SIZE, "NET Connect info is too large");
@@ -1421,7 +1420,10 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
             } else if (sub->reg) {
               size_t sendSize;
               sub->ringAlgo->getNextSendAddr(sub->transmitted, (uint8_t**)&buff, &sendSize, &sub->sendMhandle);
-              assert(sendSize == size);
+              if (sendSize != (size_t)size) {
+                WARN("NET send buffer size %zu does not match FIFO size %d", sendSize, size);
+                return ncclInternalError;
+              }
             }
           }
           if (ready) {
@@ -1943,14 +1945,20 @@ static ncclResult_t sendProxyRegBuffer(struct ncclProxyConnection* connection, s
                                        void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   void* handle = NULL;
   struct netRegInfo* info = (struct netRegInfo*)reqBuff;
-  int numSegments = info->numSegments;
   struct sendNetResources* resources = (struct sendNetResources*)(connection->transportResources);
   // The value of ret is ignored
   ncclResult_t ret;
   bool needReg = true;
 
-  assert(reqSize == sizeof(struct netRegInfo));
-  assert(respSize == sizeof(void*));
+  if (reqSize != sizeof(struct netRegInfo)) {
+    WARN("Invalid NET register request size %d, expected %zu", reqSize, sizeof(struct netRegInfo));
+    return ncclInternalError;
+  }
+  if (respSize != sizeof(void*)) {
+    WARN("Invalid NET register response size %d, expected %zu", respSize, sizeof(void*));
+    return ncclInternalError;
+  }
+  int numSegments = info->numSegments;
 
 #if CUDART_VERSION >= 11070
   /* DMA-BUF support */
@@ -2004,14 +2012,20 @@ static ncclResult_t recvProxyRegBuffer(struct ncclProxyConnection* connection, s
                                        void* reqBuff, int reqSize, void* respBuff, int respSize, int* done) {
   void* handle = NULL;
   struct netRegInfo* info = (struct netRegInfo*)reqBuff;
-  int numSegments = info->numSegments;
   struct recvNetResources* resources = (struct recvNetResources*)(connection->transportResources);
   // The value of ret is ignored
   ncclResult_t ret;
   bool needReg = true;
 
-  assert(reqSize == sizeof(struct netRegInfo));
-  assert(respSize == sizeof(void*));
+  if (reqSize != sizeof(struct netRegInfo)) {
+    WARN("Invalid NET register request size %d, expected %zu", reqSize, sizeof(struct netRegInfo));
+    return ncclInternalError;
+  }
+  if (respSize != sizeof(void*)) {
+    WARN("Invalid NET register response size %d, expected %zu", respSize, sizeof(void*));
+    return ncclInternalError;
+  }
+  int numSegments = info->numSegments;
 
 #if CUDART_VERSION >= 11070
   /* DMA-BUF support */
@@ -2070,7 +2084,10 @@ static ncclResult_t sendProxyDeregBuffer(struct ncclProxyConnection* connection,
   void* handle;
   struct sendNetResources* resources = (struct sendNetResources*)(connection->transportResources);
 
-  assert(reqSize == sizeof(void*));
+  if (reqSize != sizeof(void*)) {
+    WARN("Invalid NET deregister request size %d, expected %zu", reqSize, sizeof(void*));
+    return ncclInternalError;
+  }
   memcpy(&handle, reqBuff, sizeof(void*));
   if (handle) {
     struct proxyMemHandle memHandle = {};
@@ -2089,7 +2106,10 @@ static ncclResult_t recvProxyDeregBuffer(struct ncclProxyConnection* connection,
   void* handle;
   struct recvNetResources* resources = (struct recvNetResources*)(connection->transportResources);
 
-  assert(reqSize == sizeof(void*));
+  if (reqSize != sizeof(void*)) {
+    WARN("Invalid NET deregister request size %d, expected %zu", reqSize, sizeof(void*));
+    return ncclInternalError;
+  }
   memcpy(&handle, reqBuff, sizeof(void*));
   if (handle) {
     struct proxyMemHandle memHandle = {};

@@ -17,7 +17,6 @@
 #include "param.h"
 #include "profiler/net_ib.h"
 
-#include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -368,7 +367,10 @@ struct ncclIbNetCommDevBase* ncclIbGetNetCommDevBase(ncclIbNetCommBase* base, in
 // For example, if a device has 2 QPs, qpIndex can be 0 or 1.
 static inline ncclResult_t ncclIbCommBaseGetQpByIndex(struct ncclIbNetCommBase* commBase, int devIndex, int qpIndex,
                                                       ncclIbQp** qp) {
-  assert(devIndex >= 0 && devIndex < commBase->vProps.ndevs);
+  if (devIndex < 0 || devIndex >= commBase->vProps.ndevs) {
+    WARN("NET/IB: Invalid device index %d, expected [0, %d)", devIndex, commBase->vProps.ndevs);
+    return ncclInternalError;
+  }
   *qp = commBase->activeQps[commBase->vProps.ndevs * qpIndex + devIndex];
   return ncclSuccess;
 }
@@ -376,10 +378,21 @@ static inline ncclResult_t ncclIbCommBaseGetQpByIndex(struct ncclIbNetCommBase* 
 // Each request is transferred over all devices, and depending on the
 // "splitDataOnQps" configuration parameter, a request may be transferred over
 // a single QP per device or on all QPs of each device.
-static inline int ncclIbCommBaseGetNqpsPerRequest(struct ncclIbNetCommBase* baseComm) {
-  assert(baseComm->nDataQps != -1);
-  assert(baseComm->nqps != -1);
-  return (baseComm->splitDataOnQps == 1) ? baseComm->nqps : baseComm->nDataQps;
+static inline ncclResult_t ncclIbCommBaseGetNqpsPerRequest(struct ncclIbNetCommBase* baseComm, int* nQps) {
+  if (nQps == NULL) {
+    WARN("NET/IB: nQps output parameter is NULL");
+    return ncclInternalError;
+  }
+  if (baseComm->nDataQps == -1) {
+    WARN("NET/IB: nDataQps is not initialized");
+    return ncclInternalError;
+  }
+  if (baseComm->nqps == -1) {
+    WARN("NET/IB: nqps is not initialized");
+    return ncclInternalError;
+  }
+  *nQps = (baseComm->splitDataOnQps == 1) ? baseComm->nqps : baseComm->nDataQps;
+  return ncclSuccess;
 }
 
 // The function selects the QP to be used for the request. The QP selected
@@ -392,10 +405,14 @@ static inline int ncclIbCommBaseGetNqpsPerRequest(struct ncclIbNetCommBase* base
 // outQpIndex is the index of the QP in the base::qps[] array.
 static inline ncclResult_t ncclIbCommBaseGetQpForRequest(struct ncclIbNetCommBase* baseComm, const uint64_t id,
                                                          const uint8_t qpIndex, ncclIbQp** outQp, int* outQpIndex) {
-  int nQps = ncclIbCommBaseGetNqpsPerRequest(baseComm);
+  int nQps = 0;
+  NCCLCHECK(ncclIbCommBaseGetNqpsPerRequest(baseComm, &nQps));
   *outQpIndex = (id * nQps + qpIndex) % baseComm->nqps;
   *outQp = baseComm->activeQps[*outQpIndex];
-  assert(*outQp != NULL);
+  if (*outQp == NULL) {
+    WARN("NET/IB: QP is NULL for request id %lu, QP index %d", id, *outQpIndex);
+    return ncclInternalError;
+  }
   return ncclSuccess;
 }
 
@@ -403,8 +420,14 @@ static inline ncclResult_t ncclIbCommBaseGetQpForRequest(struct ncclIbNetCommBas
 // index of the QP in the ncclIbNetCommBase::qps[] array.
 static inline ncclResult_t ncclIbCommBaseGetQpByQpNum(struct ncclIbNetCommBase* commBase, int devIndex, uint32_t qpNum,
                                                       ncclIbQp** qp, int* qpIndex) {
-  assert(devIndex >= 0 && devIndex < commBase->vProps.ndevs);
-  assert(qp != NULL);
+  if (devIndex < 0 || devIndex >= commBase->vProps.ndevs) {
+    WARN("NET/IB: Invalid device index %d, expected [0, %d)", devIndex, commBase->vProps.ndevs);
+    return ncclInternalError;
+  }
+  if (qp == NULL) {
+    WARN("NET/IB: QP output pointer is NULL");
+    return ncclInternalError;
+  }
   TRACE(NCCL_NET, "NET/IB: %s: Looking for QP num %u on devIndex %d among %d QPs", __func__, qpNum, devIndex,
         commBase->nqps / commBase->vProps.ndevs);
   for (int qpIndexInDev = 0; qpIndexInDev < (commBase->nqps / commBase->vProps.ndevs); qpIndexInDev++) {

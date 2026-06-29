@@ -112,7 +112,11 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
   if (!foundSymm) goto exit;
 
   // make sure kernel args space can hold at least a single work
-  assert(comm->workArgsBytes >= ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, 1));
+  if (comm->workArgsBytes < ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, 1)) {
+    WARN("Symmetric kernel args size %u is smaller than minimum size %zu", comm->workArgsBytes,
+         ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, 1));
+    return ncclInternalError;
+  }
 
   // Determine symmetric tasks kernels
   for (int cursor = 0; cursor < fnOpTySymCount; cursor++) {
@@ -275,7 +279,11 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
           devWork.nChannels = 1;
         } else if (cellLeft <= remainCell) {
           // the last segment of the task
-          assert(devWork.nChannels > 0);
+          if (devWork.nChannels <= 0) {
+            WARN("Symmetric work channel count is %d", devWork.nChannels);
+            ret = ncclInternalError;
+            goto fail;
+          }
           // if the remaining cell is less than 1024 bytes, we can fuse the last channel
           if ((remainCell - cellLeft) * NCCL_SYM_KERNEL_CELL_SIZE <= (1 << 10) || ncclIntruQueueEmpty(symTaskQueue)) {
             devWork.nChannels++;
@@ -285,7 +293,11 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
           devWork.nChannels++;
         }
       } else {
-        assert(cellLeft == taskCell);
+        if (cellLeft != taskCell) {
+          WARN("Symmetric task cell count %zu does not match remaining cell count %zu", taskCell, cellLeft);
+          ret = ncclInternalError;
+          goto fail;
+        }
         if (taskCell <= remainCell) {
           // the first segment of the task is fully scheduled onto the channel
           devWork.sChannelId = curChannel;

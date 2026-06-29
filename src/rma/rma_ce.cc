@@ -5,7 +5,6 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include <assert.h>
 #include "nccl.h"
 #include "alloc.h"
 #include "checks.h"
@@ -399,12 +398,18 @@ ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* p
   struct ncclTaskRma* task = ncclIntruQueueHead(&plan->rmaTaskQueueCe);
   ncclIntruQueueDequeue(&plan->rmaTaskQueueCe);
 
-  // Assert task func is ncclFuncWaitSignal
-  assert(task->func == ncclFuncWaitSignal);
-  // Assert task context is the same as the plan context
-  assert(task->ctx == ctx);
-  // Assert the plan has exactly one RMA CE task
-  assert(plan->rmaArgs->nRmaTasksCe == 1);
+  if (task->func != ncclFuncWaitSignal) {
+    WARN("RMA CE task function is %d, expected %d", task->func, ncclFuncWaitSignal);
+    goto invalid_task;
+  }
+  if (task->ctx != ctx) {
+    WARN("RMA CE task context is %d, expected %d", task->ctx, ctx);
+    goto invalid_task;
+  }
+  if (plan->rmaArgs->nRmaTasksCe != 1) {
+    WARN("RMA CE task count is %d, expected 1", plan->rmaArgs->nRmaTasksCe);
+    goto invalid_task;
+  }
 
   if (task->signalMode == NCCL_SIGNAL) {
     if (!persistent) {
@@ -469,6 +474,9 @@ exit:
   if (batchParams) free(batchParams);
   ncclCeFreeBatchOpsParams(&ceParams);
   return ret;
+invalid_task:
+  ret = ncclInternalError;
+  ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);
 fail:
   goto exit;
 }

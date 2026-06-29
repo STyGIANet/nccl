@@ -901,7 +901,7 @@ ib_recv_dev_list:
   for (int i = 0; i < comm->base.vProps.ndevs; i++) {
     int ibDevN = comm->base.vProps.devs[i];
     if (comm->base.resiliency) {
-      ncclIbResiliencyDataCqSizeGet(comm->base.resiliency, i, &cqSize);
+      NCCLCHECKGOTO(ncclIbResiliencyDataCqSizeGet(comm->base.resiliency, i, &cqSize), ret, fail);
     }
     NCCLCHECKGOTO(ncclIbInitCommDevBase(ibDevN, &comm->devs[i].base, &comm->base.stats, cqSize), ret, fail);
     comm->ar = comm->ar && ncclIbDevs[ibDevN].ar; // ADAPTIVE_ROUTING - if all merged devs have it enabled
@@ -1184,7 +1184,7 @@ static ncclResult_t ncclIbReceiverQpsCreateToRts(ncclIbRecvComm* rComm, struct n
     qpCreateAttrs.pd = rCommDev->base.pd;
     qpCreateAttrs.qpContext = &rComm->base.stats;
     if (rComm->base.resiliency) {
-      ncclIbResiliencyDataRqSizeGet(rComm->base.resiliency, devIndex, &qpCreateAttrs.maxRecvWorkRequest);
+      NCCLCHECK(ncclIbResiliencyDataRqSizeGet(rComm->base.resiliency, devIndex, &qpCreateAttrs.maxRecvWorkRequest));
     }
     if (ibDev->ibProvider == IB_PROVIDER_MLX5 && ncclParamIbOooRq()) {
       if (ibDev->ar == 0) {
@@ -1352,7 +1352,7 @@ ncclResult_t ncclIbCreateFlushQp(struct ncclIbRecvComm* comm) {
 ncclResult_t ncclIbPostReceiveWorkRequestsOnQp(struct ncclIbRecvComm* recvComm, ncclIbQp* dataQp) {
   uint32_t nRecvWorkRequestsPerQp = NET_IB_MAX_REQUESTS;
   if (recvComm->base.resiliency) {
-    ncclIbResiliencyDataRqSizeGet(recvComm->base.resiliency, dataQp->devIndex, &nRecvWorkRequestsPerQp);
+    NCCLCHECK(ncclIbResiliencyDataRqSizeGet(recvComm->base.resiliency, dataQp->devIndex, &nRecvWorkRequestsPerQp));
   }
   INFO(NCCL_NET, "NET/IB: %s: Pre-posting %d Receive WQEs on QP (qp_num=%d, comm=%p)", __func__, nRecvWorkRequestsPerQp,
        dataQp->qp->qp_num, recvComm);
@@ -1522,7 +1522,7 @@ ib_recv:
     rCommDev = rComm->devs + i;
     ibDevN = rComm->base.vProps.devs[i];
     if (rComm->base.resiliency) {
-      ncclIbResiliencyDataCqSizeGet(rComm->base.resiliency, i, &cqSize);
+      NCCLCHECKGOTO(ncclIbResiliencyDataCqSizeGet(rComm->base.resiliency, i, &cqSize), ret, fail);
     }
     NCCLCHECKGOTO(ncclIbInitCommDevBase(ibDevN, &rCommDev->base, &rComm->base.stats, cqSize), ret, fail);
     if (rComm->base.resiliency) {

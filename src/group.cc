@@ -10,7 +10,6 @@
 #include "enqueue.h"
 #include "transport.h"
 #include "channel.h"
-#include <assert.h>
 #include "bootstrap.h"
 #include "ce_coll.h"
 #include "profiler.h"
@@ -505,7 +504,11 @@ static ncclResult_t asyncJobLaunch(struct ncclIntruQueue<struct ncclAsyncJob, &n
           }
         } else {
           /* safety check */
-          assert(state == ncclGroupJobJoined);
+          if (state != ncclGroupJobJoined) {
+            WARN("Async job state is %d, expected %d", state, ncclGroupJobJoined);
+            if (ret == ncclSuccess) ret = ncclInternalError;
+            errorJobAbortFlag = true;
+          }
         }
 
         if (!job->destroyFlag &&
@@ -821,7 +824,11 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
 
   if (hasCommHead || !ncclIntruQueueEmpty(&groupJob->asyncJobs) || ncclGroupCommPreconnectHead != nullptr) {
     /* make sure ncclGroupBlocking has been set. */
-    assert(ncclGroupBlocking == 0 || ncclGroupBlocking == 1);
+    if (ncclGroupBlocking != 0 && ncclGroupBlocking != 1) {
+      WARN("Invalid group blocking state %d", ncclGroupBlocking);
+      ret = ncclInternalError;
+      goto fail;
+    }
     if (ncclGroupBlocking == 0) {
       /* nonblocking group */
       if (!ncclIntruQueueEmpty(&groupJob->asyncJobs)) {

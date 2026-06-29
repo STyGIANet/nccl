@@ -89,7 +89,25 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
   TRACE(NCCL_NET, "NET/IB: %s: Posting a send request (req=%p, comm=%p, id=%ld, slot=%d, nreqs=%d)", __func__, reqs[0],
         reqs[0]->base, reqs[0]->id, slot, nreqs);
 
-  int nqps = ncclIbCommBaseGetNqpsPerRequest(&comm->base);
+  int nqps = 0;
+  NCCLCHECK(ncclIbCommBaseGetNqpsPerRequest(&comm->base, &nqps));
+#ifdef NCCL_ENABLE_NET_PROFILING
+  if (nqps > MAX_QPS_PER_REQ) {
+    WARN("NET/IB: QP count %d exceeds maximum profiler event handle capacity %d", nqps, MAX_QPS_PER_REQ);
+    return ncclInternalError;
+  }
+#endif
+  if (nqps > NCCL_IB_MAX_QPS) {
+    WARN("NET/IB: QP count %d exceeds maximum QP capacity %d", nqps, NCCL_IB_MAX_QPS);
+    return ncclInternalError;
+  }
+  // Validate QPs before posting sends.
+  ncclIbQp* qps[NCCL_IB_MAX_QPS];
+  int qpIndexes[NCCL_IB_MAX_QPS];
+  for (int i = 0; i < nqps; i++) {
+    NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, reqs[0]->id, i, &qps[i], &qpIndexes[i]));
+  }
+
   uint64_t wr_id = 0ULL;
   for (int r = 0; r < nreqs; r++) {
     struct ibv_send_wr* wr = comm->wrs + r;
@@ -147,10 +165,9 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
   lastWr->send_flags = IBV_SEND_SIGNALED;
 
   uint32_t sendOffsets[NCCL_NET_IB_MAX_RECVS] = {0};
-  int qpIndex = -1;
-  ncclIbQp* qp = NULL;
   for (int i = 0; i < nqps; i++) {
-    NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, reqs[0]->id, i, &qp, &qpIndex));
+    ncclIbQp* qp = qps[i];
+    int qpIndex = qpIndexes[i];
 
     TRACE(NCCL_NET,
           "NET/IB: %s: Posting send (req=%p, comm=%p, id=%ld, slot=%d, nreqs=%d, wr_id=%ld) on QP (qp_num=%u, "
@@ -204,7 +221,6 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
     for (int r = 0; r < nreqs; r++) {
       // Store the qpIndex for this request
       int nEventHandles = reqs[r]->pInfo[0].nEventHandles;
-      assert(nEventHandles < MAX_QPS_PER_REQ);
       reqs[r]->pInfo[0].qpIndex[nEventHandles] = qpIndex;
       // Store info for profiler
       int64_t pluginId = NCCL_PROFILER_NET_TYPE_IB | NCCL_PROFILER_NET_IB_VER;
@@ -303,6 +319,21 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, size_t size, int tag, void*
       return ncclInternalError;
     }
 
+    int nqps = 0;
+    NCCLCHECK(ncclIbCommBaseGetNqpsPerRequest(&comm->base, &nqps));
+    if (nqps > NCCL_IB_MAX_QPS) {
+      WARN("NET/IB: QP count %d exceeds maximum QP capacity %d", nqps, NCCL_IB_MAX_QPS);
+      return ncclInternalError;
+    }
+    // Validate QPs before allocating the request.
+    int qpDevIndexes[NCCL_IB_MAX_QPS];
+    for (int i = 0; i < nqps; i++) {
+      int qpIndex = -1;
+      ncclIbQp* qp = NULL;
+      NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, comm->base.fifoHead, i, &qp, &qpIndex));
+      qpDevIndexes[i] = qp->devIndex;
+    }
+
     struct ncclIbRequest* req;
     NCCLCHECK(ncclIbGetRequest(&comm->base, &req));
     req->id = comm->base.fifoHead;
@@ -320,12 +351,8 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, size_t size, int tag, void*
 #endif
 
     // Populate events
-    int nqps = ncclIbCommBaseGetNqpsPerRequest(&comm->base);
-    int qpIndex = -1;
-    ncclIbQp* qp = NULL;
     for (int i = 0; i < nqps; i++) {
-      NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, req->id, i, &qp, &qpIndex));
-      ncclIbAddEvent(req, qp->devIndex);
+      ncclIbAddEvent(req, qpDevIndexes[i]);
     }
 
     // Store all lkeys
@@ -438,6 +465,26 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
   if (n > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats, __func__));
 
+  int nqps = 0;
+  NCCLCHECK(ncclIbCommBaseGetNqpsPerRequest(&comm->base, &nqps));
+#ifdef NCCL_ENABLE_NET_PROFILING
+  if (nqps > MAX_QPS_PER_REQ) {
+    WARN("NET/IB: QP count %d exceeds maximum profiler event handle capacity %d", nqps, MAX_QPS_PER_REQ);
+    return ncclInternalError;
+  }
+#endif
+  if (nqps > NCCL_IB_MAX_QPS) {
+    WARN("NET/IB: QP count %d exceeds maximum QP capacity %d", nqps, NCCL_IB_MAX_QPS);
+    return ncclInternalError;
+  }
+
+  // Validate QPs before allocating/publishing the request.
+  ncclIbQp* qps[NCCL_IB_MAX_QPS];
+  int qpIndexes[NCCL_IB_MAX_QPS];
+  for (int i = 0; i < nqps; i++) {
+    NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, comm->base.fifoHead, i, &qps[i], &qpIndexes[i]));
+  }
+
   struct ncclIbRequest* req;
   NCCLCHECK(ncclIbGetRequest(&comm->base, &req));
   int slot = comm->base.fifoHead % NET_IB_MAX_REQUESTS;
@@ -462,11 +509,9 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
   comm->recvReqs[req->id % NET_IB_MAX_REQUESTS] = req;
 
   TIME_START(1);
-  const int nqps = ncclIbCommBaseGetNqpsPerRequest(&comm->base);
-  int qpIndex = -1;
-  ncclIbQp* qp = NULL;
   for (int i = 0; i < nqps; i++) {
-    NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, req->id, i, &qp, &qpIndex));
+    ncclIbQp* qp = qps[i];
+    int qpIndex = qpIndexes[i];
     ncclIbAddEvent(req, qp->devIndex);
     if (comm->prepostReceiveWorkRequests) {
       continue;
@@ -478,7 +523,6 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
     // Start a QP event for every request in the multirecv and every qp
     for (int r = 0; r < n; r++) {
       int nEventHandles = req->pInfo[r].nEventHandles;
-      assert(nEventHandles < MAX_QPS_PER_REQ);
       req->pInfo[r].qpIndex[nEventHandles] = qpIndex;
       // Store info for profiler
       int64_t pluginId = NCCL_PROFILER_NET_TYPE_IB | NCCL_PROFILER_NET_IB_VER;
@@ -582,12 +626,22 @@ static int getReqQpIndex(struct ncclIbRequest* req, int request, int qpNumber) {
 
 static inline ncclResult_t ncclIbRequestRetrieveFromCompletion(struct ncclIbNetCommBase* base, ibv_wc* wc,
                                                                ncclIbRequest** req) {
-  assert(req != NULL);
-  assert(wc != NULL);
+  if (req == NULL) {
+    WARN("NET/IB: Request output pointer is NULL");
+    return ncclInternalError;
+  }
+  if (wc == NULL) {
+    WARN("NET/IB: Work completion is NULL");
+    return ncclInternalError;
+  }
 
   // In case of a completion with error, there is no guarantee that all fields
   // of the completion are valid.
-  assert(wc->status == IBV_WC_SUCCESS);
+  if (wc->status != IBV_WC_SUCCESS) {
+    WARN("NET/IB: Work completion status is %s(%d), expected %s(%d)", ibvWcStatusStr(wc->status), wc->status,
+         ibvWcStatusStr(IBV_WC_SUCCESS), IBV_WC_SUCCESS);
+    return ncclInternalError;
+  }
 
   TRACE(NCCL_NET, "NET/IB: %s: Retrieving a %s request (wr_id=%ld, opcode=%s)", __func__,
         base->isSend ? "send" : "recv", wc->wr_id, ibvWcOpcodeStr(wc->opcode));
@@ -618,13 +672,13 @@ static inline ncclResult_t ncclIbRequestRetrieveFromCompletion(struct ncclIbNetC
   return ncclSuccess;
 }
 
-static inline bool ncclIbRequestIsComplete(struct ncclIbRequest* request) {
-  bool complete =
+static inline ncclResult_t ncclIbRequestIsComplete(struct ncclIbRequest* request, bool* complete) {
+  *complete =
     (request->events[0] == 0 && request->events[1] == 0 && request->events[2] == 0 && request->events[3] == 0);
-  if (!complete && request->base->resiliency) {
-    NCCLCHECK(ncclIbResiliencyRequestIsComplete(request, &complete));
+  if (!*complete && request->base->resiliency) {
+    NCCLCHECK(ncclIbResiliencyRequestIsComplete(request, complete));
   }
-  return complete;
+  return ncclSuccess;
 }
 
 static inline ncclResult_t ncclIbRequestComplete(struct ncclIbRequest* r, int* done, int* sizes) {
@@ -828,7 +882,9 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
   struct ibv_wc wcs[4];
   do {
     NCCLCHECK(ncclIbStatsCheckFatalCount(&r->base->stats, __func__));
-    if (ncclIbRequestIsComplete(r)) {
+    bool complete = false;
+    NCCLCHECK(ncclIbRequestIsComplete(r, &complete));
+    if (complete) {
       NCCLCHECK(ncclIbRequestComplete(r, done, sizes));
       return ncclSuccess;
     }

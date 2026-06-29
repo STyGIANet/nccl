@@ -5,7 +5,6 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include <assert.h>
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include "nccl.h"
@@ -320,8 +319,11 @@ static inline ncclResult_t ncclRmaProxyEnqueueNonPersistentDesc(struct ncclRmaPr
     return ncclRmaProxyDestroyDesc(ctx->comm, &desc);
   }
   // Non-persistent puts use a bounded circular buffer; caller is required
-  // to have checked ncclRmaProxyEnqueueFull. Catch silent overflow in debug.
-  assert(!ncclRmaProxyCircularBufFull(ctx, peer));
+  // to have checked ncclRmaProxyEnqueueFull.
+  if (ncclRmaProxyCircularBufFull(ctx, peer)) {
+    WARN("RMA proxy circular buffer is full for peer %d", peer);
+    return ncclInternalError;
+  }
   uint32_t pi = COMPILER_ATOMIC_LOAD_32(&ctx->pis[peer], std::memory_order_relaxed);
   uint32_t idx = pi & (ctx->queueSize - 1);
   ctx->circularBuffers[peer * ctx->queueSize + idx] = desc;
@@ -575,7 +577,12 @@ ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan*
   // descs[i] points to a fresh heap-allocated descriptor we still own.
   for (int i = 0; i < nRmaTasksProxy; i++) {
     struct ncclTaskRma* task = ncclIntruQueueDequeue(&plan->rmaTaskQueueProxy);
-    assert(task->ctx == ctx);
+    if (task->ctx != ctx) {
+      WARN("RMA proxy task context is %d, expected %d", task->ctx, ctx);
+      ret = ncclInternalError;
+      ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);
+      goto fail;
+    }
 
     NCCLCHECKGOTO(ncclCalloc(&descs[i], 1), ret, fail);
     NCCLCHECKGOTO(ncclRmaProxyPutDescFromTask(comm, rmaProxyCtx, plan, task, descs[i]), ret, fail);
@@ -659,12 +666,22 @@ ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan
   struct ncclTaskRma* task = ncclIntruQueueHead(&plan->rmaTaskQueueProxy);
   ncclIntruQueueDequeue(&plan->rmaTaskQueueProxy);
 
-  assert(task->func == ncclFuncWaitSignal);
-  assert(task->ctx == ctx);
-  assert(plan->rmaArgs->nRmaTasksProxy == 1);
-
   CUstreamBatchMemOpParams* batchParams = nullptr;
   struct ncclRmaProxyDesc* desc = nullptr;
+
+  if (task->func != ncclFuncWaitSignal) {
+    WARN("RMA proxy task function is %d, expected %d", task->func, ncclFuncWaitSignal);
+    ret = ncclInternalError;
+    goto exit_non_wait_task;
+  }
+  if (task->ctx != ctx) {
+    WARN("RMA proxy task context is %d, expected %d", task->ctx, ctx);
+    goto invalid_task;
+  }
+  if (plan->rmaArgs->nRmaTasksProxy != 1) {
+    WARN("RMA proxy task count is %d, expected 1", plan->rmaArgs->nRmaTasksProxy);
+    goto invalid_task;
+  }
 
   if (task->signalMode == NCCL_SIGNAL) {
     NCCLCHECKGOTO(ncclCalloc(&desc, 1), ret, fail);
@@ -683,9 +700,12 @@ exit:
   }
   free(task->peers);
   free(task->nsignals);
+exit_non_wait_task:
   free(batchParams);
   ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);
   return ret;
+invalid_task:
+  ret = ncclInternalError;
 fail:
   goto exit;
 }

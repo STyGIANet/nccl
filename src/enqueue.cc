@@ -23,7 +23,6 @@
 
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
-#include <cassert>
 #include <cfloat> // FLT_MAX
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
@@ -370,7 +369,10 @@ ncclResult_t ncclTasksRegAndEnqueue(struct ncclComm* comm) {
     ncclIntruQueueEnqueue(&planner->collWorkQueue, workNode);
     task = task->next;
   }
-  assert(ncclIntruQueueEmpty(&planner->tmpCollWorkQueue));
+  if (!ncclIntruQueueEmpty(&planner->tmpCollWorkQueue)) {
+    WARN("Temporary collective work queue is not empty");
+    return ncclInternalError;
+  }
   return ncclSuccess;
 }
 

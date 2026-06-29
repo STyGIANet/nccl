@@ -21,7 +21,10 @@ ncclResult_t ncclDevrPopulateSegmentSizes(struct ncclDevrMemory* mem, int numSeg
   // If our caller does not have a VA (for instance, in ncclDevrCommCreateInternal),
   // there's only one segment with size = mem->size.
   if (mem->primaryAddr == nullptr) {
-    assert(numSegments == 1);
+    if (numSegments != 1) {
+      WARN("Invalid segment count %d, expected 1", numSegments);
+      return ncclInternalError;
+    }
     mem->segmentSizes[0] = mem->size;
     return ret;
   }

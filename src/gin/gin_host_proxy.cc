@@ -5,7 +5,6 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include <assert.h>
 #include "nccl.h"
 #include "gin/gin_host.h"
 #include "gin/gin_host_proxy.h"
@@ -317,7 +316,8 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
     break;
   default:
     // this error should already have been checked in pollGfd
-    assert(0);
+    WARN("Unexpected GIN proxy operation %d", op);
+    return ncclInternalError;
   }
   TRACE(NCCL_NET, "GFD submitted into GIN plugin - contextId: %d, stateIdx: %lu, request: %p", hostGpuCtx->contextId,
         state - hostGpuCtx->states, state->request);
