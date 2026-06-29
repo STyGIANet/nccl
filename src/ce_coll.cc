@@ -36,7 +36,7 @@ ncclResult_t ncclCeInit(struct ncclComm* comm) {
   // Ensure symmetric memory runtime is initialized
   NCCLCHECKGOTO(ncclDevrInitOnce(comm), ret, fail);
   // Allocate and register memory for the symmetric memory
-  NCCLCHECKGOTO(ncclMemAlloc((void**)&ceDevBase, ceDevBaseSize), ret, fail);
+  NCCLCHECKGOTO(ncclCudaCalloc((void**)&ceDevBase, ceDevBaseSize, comm->memManager), ret, fail);
   NCCLCHECKGOTO(ncclDevrWindowRegisterInGroup(comm, ceDevBase, ceDevBaseSize, NCCL_WIN_COLL_SYMMETRIC, &ceWinDev), ret,
                 fail);
   NCCLCHECKGOTO(ncclShadowPoolToHost(&comm->devrState.shadows, ceWinDev, &ceWinDevHost), ret, fail);
@@ -62,7 +62,7 @@ fail:
   ncclCudaFree(comm->ceColl.ceSeqNumDev, comm->memManager);
   // Clean up partial initialization - both functions handle null safely
   ncclCommWindowDeregister(comm, ceWinDev);
-  ncclMemFree(ceDevBase);
+  ncclCudaFree(ceDevBase, comm->memManager);
   goto exit;
 }
 
@@ -79,7 +79,7 @@ ncclResult_t ncclCeFinalize(struct ncclComm* comm) {
   // Note: both functions handle null safely
   NCCLCHECKIGNORE(ncclCommWindowDeregister(comm, comm->ceColl.ceSyncWin ? comm->ceColl.ceSyncWin->vidmem : nullptr),
                   ret);
-  NCCLCHECKIGNORE(ncclMemFree(comm->ceColl.baseUCSymReadyPtr), ret);
+  NCCLCHECKIGNORE(ncclCudaFree(comm->ceColl.baseUCSymReadyPtr, comm->memManager), ret);
   NCCLCHECKIGNORE(ncclCudaFree(comm->ceColl.ceSeqNumDev, comm->memManager), ret);
 
   comm->ceColl.ceSeqNumDev = nullptr;
@@ -238,8 +238,8 @@ ncclResult_t ncclMemOpSync(struct ncclComm* comm, cudaStream_t stream, struct nc
   uint32_t* completePtrs = (uint32_t*)comm->ceColl.baseUCSymComplPtr;
 
   // Allocate enough slots for all possible ops
-  // For cross-clique, NVLS multicast isn't available across cliques - use unicast sync instead
-  bool useMCSync = comm->nvlsSupport && !comm->p2pCrossClique;
+  // We follow the built-in symmetric kernels on whether to use NVLS or not.
+  bool useMCSync = comm->symkState.hasLsaMultimem;
   size_t batchSize = (useMCSync ? NCCL_CE_SYNC_OPS_PER_RANK_MC : NCCL_CE_SYNC_OPS_PER_RANK_UC) * lsaSize;
   size_t opIdx = 0;
   CUstreamBatchMemOpParams* batchParams = nullptr;
@@ -1445,7 +1445,7 @@ ncclResult_t scheduleCeCollTaskToPlan(struct ncclComm* comm, struct ncclKernelPl
       INFO(NCCL_TUNING, "%s [Hierarchical CE]: %ld Bytes -> RMA proxy + CE", ncclFuncToString(task->func),
            task->count * ncclTypeSize(task->datatype));
     } else {
-      const char* nvlsSync = comm->nvlsSupport ? "; CE synchronization with NVLS" : "";
+      const char* nvlsSync = comm->symkState.hasLsaMultimem ? "; CE synchronization with NVLS" : "";
       INFO(NCCL_TUNING, "%s [Copy Engine]: %ld Bytes -> cudaMemcpy%s", ncclFuncToString(task->func),
            task->count * ncclTypeSize(task->datatype), nvlsSync);
     }

@@ -367,12 +367,13 @@ static ncclResult_t symUnbindTeamMemory(struct ncclComm* comm, struct ncclDevrTe
   return ncclSuccess;
 }
 
-// Caller must barrier the team afterward.
+// Caller must barrier the team afterward unless *needBarrier == false on return.
 static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, bool multimem,
-                                  struct ncclDevrTeam** outTeam) {
+                                  struct ncclDevrTeam** outTeam, bool* needBarrier = nullptr) {
   ncclResult_t ret = ncclSuccess;
   struct ncclDevrState* devr = &comm->devrState;
   struct ncclDevrTeam* t = devr->teamHead;
+  if (needBarrier != nullptr) *needBarrier = false;
   bool teamIsNew = false;
   while (true) {
     if (t == nullptr) {
@@ -443,6 +444,7 @@ static ncclResult_t symTeamObtain(struct ncclComm* comm, struct ncclTeam team, b
       for (struct ncclDevrMemory* mem = devr->memHead; mem != nullptr; mem = mem->next) {
         NCCLCHECKGOTO(symBindTeamMemory(comm, t, mem), ret, fail_mcHandle_mcAddr_unmap_mems);
       }
+      if (needBarrier != nullptr) *needBarrier = true;
 
       if (false) {
         // Error labels:
@@ -909,7 +911,7 @@ ncclResult_t ncclDevrWindowRegisterInGroup(struct ncclComm* comm, void* userPtr,
 
   CUDACHECKGOTO(cudaStreamSynchronize(stream), ret, fail_locReg_memHandle_mem_stream_win);
 
-  // symWindowCreate needs barrier.
+  // symMemoryObtain and symWindowCreate need a barrier.
   NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0xbeef), ret,
                 fail_locReg_memHandle_mem_stream_win);
 
@@ -1688,8 +1690,13 @@ ncclResult_t ncclDevrGetLsaTeamPtrMC(struct ncclComm* comm, struct ncclDevrWindo
   }
 
   bool multimem = true;
+  bool needBarrier = false;
   struct ncclDevrTeam* tm;
-  NCCLCHECK(symTeamObtain(comm, lsaTeam, multimem, &tm));
+  NCCLCHECK(symTeamObtain(comm, lsaTeam, multimem, &tm, &needBarrier));
+  if (needBarrier) {
+    struct ncclDevrState* devr = &comm->devrState;
+    NCCLCHECK(bootstrapIntraNodeBarrier(comm->bootstrap, devr->lsaRankList, devr->lsaSelf, devr->lsaSize, 0xbeef));
+  }
 
   // Return the base multicast address for this team with offset
   *outPtr = (void*)((uintptr_t)tm->mcBasePtr + winHost->bigOffset + offset);
