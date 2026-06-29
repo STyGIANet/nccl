@@ -26,6 +26,7 @@
 #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
 #include "gpucontext/gpucontext.h"
 #include "../gin.h"
+#include "../common.h"
 
 #define DOCACHECK(call) \
   do { \
@@ -406,9 +407,29 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
     ncclParamGinGdakiMaxDestRdAtomic() > 0 ? ncclParamGinGdakiMaxDestRdAtomic() : ctx->ib_dev_attr.max_qp_rd_atom;
   int max_qp_rd_atomic =
     ncclParamGinGdakiMaxQpRdAtomic() > 0 ? ncclParamGinGdakiMaxQpRdAtomic() : ctx->ib_dev_attr.max_qp_rd_atom;
+  int dlid = exch_info->lid;
+
+  if (ctx->port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
+    bool sameSubnet = (ncclIbExtractLocalSubnetPrefix(ctx->rgid.global.subnet_prefix) ==
+                       ncclIbExtractLocalSubnetPrefix(exch_info->gid.global.subnet_prefix));
+    bool needGlobal = !sameSubnet || (ctx->port_attr.flags & IBV_QPF_GRH_REQUIRED);
+    if (needGlobal) {
+      if (!sameSubnet) {
+        uint16_t flid = ncclIbExtractFlid(&exch_info->gid);
+        if (flid == 0) {
+          WARN("Warning: remote FLID configured as zero even when endpoints are on different subnets, using dlid as "
+               "fallback");
+          // Note: We set dlid = exch_info->lid above.
+        } else {
+          dlid = flid;
+        }
+      }
+      DOCACHECK(doca_verbs_ah_attr_set_addr_type(ctx->ah, DOCA_VERBS_ADDR_TYPE_IB_GRH));
+    }
+  }
 
   DOCACHECK(doca_verbs_ah_attr_set_gid(ctx->ah, exch_info->vgid));
-  DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, exch_info->lid));
+  DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, dlid));
   DOCACHECK(doca_verbs_qp_attr_create(&verbs_qp_attr));
   DOCACHECKGOTO(doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_VERBS_MTU_SIZE_4K_BYTES), status,
                 destroy_verbs_qp_attr);
