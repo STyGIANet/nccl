@@ -87,17 +87,6 @@ ncclResult_t ncclIbDestroyBase(struct ncclIbNetCommDevBase* base) {
   return ncclSuccess;
 }
 
-// GID Format
-// global:  |              64b  - subnet-prefix                |                 64b - EUI                          |
-// raw   :  | 10b fixed | 22b 0 | 16b FLID | 16b subnet-prefix |                 64b - EUI                          |
-static uint16_t ncclIbExtractLocalSubnetPrefix(uint64_t subnet_prefix) {
-  return (be64toh(subnet_prefix) & 0xffff);
-}
-
-static int ncclIbExtractFlid(union ibv_gid* gid) {
-  return ntohs(*((uint16_t*)((uintptr_t)(gid->raw) + 4)));
-}
-
 static sa_family_t envIbAddrFamily(void) {
   sa_family_t family = AF_INET;
   const char* env = ncclGetEnv("NCCL_IB_ADDR_FAMILY");
