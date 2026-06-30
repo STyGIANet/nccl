@@ -277,7 +277,7 @@ ncclResult_t ncclTuningCompute(struct ncclTuningInput_t* const input, struct ncc
       struct ncclTuningInput_t generalInput = *input;
       generalInput.tuningMask = NCCL_TUNING_MASK_GENERAL_KERNELS;
       NOWARN(ncclTuningCompute(&generalInput, &generalTuning), NCCL_TUNING);
-      if (generalTuning.proto != NCCL_PROTO_LL) {
+      if (!isLLKernel || generalTuning.proto != NCCL_PROTO_LL) {
         bestTuning = generalTuning;
       }
     }
