@@ -1017,7 +1017,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     int p2pMaxPeers;
     float minNetBw;
     int localNetDeviceCount;
-    int localNetDeviceBw;
+    int localNetCountByBw;
     float localNetBw;
     int localCollNetCount;
     int isAllNvlink;
@@ -1040,7 +1040,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   bool isOneLsaTeams = false;
 
   int localNetDeviceCount = 0;
-  int localNetDeviceBw = 0;
+  int localNetCountByBw = 0;
   float localNetBw = 0.0f;
   int localCollNetCount = 0;
   int minLocalNetCount = INT_MAX;
@@ -1293,7 +1293,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     int gpu;
     NCCLCHECKGOTO(comm->ncclNet->devices(&localNetDeviceCount), ret, fail);
     NCCLCHECKGOTO(ncclTopoRankToIndex(comm->topo, comm->rank, &gpu, false), ret, fail);
-    NCCLCHECKGOTO(ncclTopoGetLocalNetCountByBw(comm->topo, gpu, &localNetDeviceBw, &localNetBw), ret, fail);
+    NCCLCHECKGOTO(ncclTopoGetLocalNetCountByBw(comm->topo, gpu, &localNetCountByBw, &localNetBw), ret, fail);
   }
   if (collNetSupport(comm)) {
     NCCLCHECKGOTO(collNetDevices(comm, &localCollNetCount), ret, fail);
@@ -1318,7 +1318,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   allGather3Data[rank].p2pMaxPeers = comm->p2pMaxPeers;
 
   allGather3Data[rank].localNetDeviceCount = localNetDeviceCount;
-  allGather3Data[rank].localNetDeviceBw = localNetDeviceBw;
+  allGather3Data[rank].localNetCountByBw = localNetCountByBw;
   allGather3Data[rank].localNetBw = localNetBw;
   allGather3Data[rank].localCollNetCount = localCollNetCount;
   NCCLCHECKGOTO(ncclTopoGetMinNetBw(comm->topo, comm->rank, &allGather3Data[rank].minNetBw), ret, fail);
@@ -1363,7 +1363,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     if (!allGather3Data[r].isAllNvlink) {
       comm->isAllNvlink = 0;
     }
-    comm->minNetCount = std::min(comm->minNetCount, allGather3Data[r].localNetDeviceBw);
+    comm->minNetCount = std::min(comm->minNetCount, allGather3Data[r].localNetCountByBw);
     comm->minLocalNetBw = std::min(comm->minLocalNetBw, allGather3Data[r].localNetBw);
   }
   if (rank == 0) {
