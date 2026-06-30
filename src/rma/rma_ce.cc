@@ -45,7 +45,7 @@ ncclResult_t ncclRmaCeInit(struct ncclComm* comm) {
     ncclWindow_vidmem* signalsWinDev;
     ncclWindow_vidmem* signalsWinDevHost;
 
-    NCCLCHECKGOTO(ncclCudaCalloc(&signalsDevBase, 3 * nRanks + 2, comm->memManager), ret, fail);
+    NCCLCHECKGOTO(ncclCudaCalloc(&signalsDevBase, 3 * signalSlots, comm->memManager), ret, fail);
     NCCLCHECKGOTO(ncclDevrWindowRegisterInGroup(comm, signalsDevBase, signalsBufSize, NCCL_WIN_COLL_SYMMETRIC,
                                                 &signalsWinDev),
                   ret, fail);
