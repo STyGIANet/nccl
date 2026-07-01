@@ -29,6 +29,7 @@
 typedef struct nvmlDevice_st* nvmlDevice_t;
 #define NVML_DEVICE_PCI_BUS_ID_BUFFER_V2_SIZE 16
 #define NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE 32
+#define NVML_DEVICE_NAME_BUFFER_SIZE 64
 
 typedef enum nvmlEnableState_enum {
   NVML_FEATURE_DISABLED = 0,     //!< Feature disabled
@@ -355,6 +356,8 @@ ncclResult_t ncclNvmlEnsureInitialized();
 ncclResult_t ncclNvmlDeviceGetHandleByPciBusId(const char* pciBusId, nvmlDevice_t* device);
 ncclResult_t ncclNvmlDeviceGetIndex(nvmlDevice_t device, unsigned* index);
 ncclResult_t ncclNvmlDeviceGetHandleByIndex(unsigned int index, nvmlDevice_t* device);
+ncclResult_t ncclNvmlDeviceGetName(nvmlDevice_t device, char* name, unsigned int length);
+ncclResult_t ncclNvmlDeviceGetCount(unsigned int* deviceCount);
 ncclResult_t ncclNvmlDeviceGetNvLinkState(nvmlDevice_t device, unsigned int link, nvmlEnableState_t* isActive);
 ncclResult_t ncclNvmlDeviceGetNvLinkRemotePciInfo(nvmlDevice_t device, unsigned int link, nvmlPciInfo_t* pci);
 ncclResult_t ncclNvmlDeviceGetNvLinkRemoteDeviceType(nvmlDevice_t device, unsigned int link,

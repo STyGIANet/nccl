@@ -54,7 +54,7 @@ static const struct rasDiagnosticsReporter rasDiagnosticsNoopReporter = {rasDiag
 // Dispatcher table for diagnostics checks. Each entry binds the stable request id
 // to the local collection and summary callbacks for that check.
 static const struct rasDiagnosticsCheck rasDiagnosticsChecks[RAS_DIAG_CHECK_COUNT] = {
-  {RAS_DIAG_CHECK_NCCL_VERSION, rasDiagnosticsNcclVersionCollectLocal, rasDiagnosticsNcclVersionSummarize},
+  {RAS_DIAG_CHECK_GPU_MODEL, rasDiagnosticsGpuModelCollectLocal, rasDiagnosticsGpuModelSummarize},
 };
 
 static ncclResult_t rasDiagnosticsSummarizePeerPayloads(
@@ -78,6 +78,7 @@ ncclResult_t rasDiagnosticsContextInit(struct rasDiagnosticsContext* ctx, const 
   ctx->commFilter.commHash = comm->commHash;
   ctx->commFilter.hostHash = comm->peerInfo[0].hostHash;
   ctx->commFilter.pidHash = comm->peerInfo[0].pidHash;
+  ctx->commNRanks = comm->nRanks;
   return ncclSuccess;
 }
 
@@ -312,6 +313,8 @@ ncclResult_t rasDiagnosticsResume(struct rasClient* client) {
   ncclResult_t ret = ncclSuccess;
   struct rasDiagnosticsClientState* diagnostics;
   struct rasCollective* coll;
+  char line[64];
+  int nRanks;
 
   if (client == nullptr || client->diagnostics == nullptr || client->coll == nullptr) {
     WARN("RAS diagnostics resume requested with invalid client state");
@@ -320,8 +323,16 @@ ncclResult_t rasDiagnosticsResume(struct rasClient* client) {
   diagnostics = client->diagnostics;
   coll = client->coll;
 
+  // A comm-scoped request reports the communicator's rank count; an unscoped one falls back to responding peers.
+  nRanks = diagnostics->ctx.hasCommFilter ? diagnostics->ctx.commNRanks : coll->nPeers;
+
+  (void)diagnostics->reporter.emit(diagnostics->reporter.target, "=== NCCL Diagnostics (passive) ===");
   ret = rasDiagnosticsSummarizePeerPayloads(&diagnostics->ctx, &diagnostics->reporter, coll->data, coll->nData);
   if (ret != ncclSuccess) INFO(NCCL_RAS, "RAS diagnostics summary returned %d", ret);
+  snprintf(line, sizeof(line), "completed in %.1f ms across %d %s",
+           (double)(clockNano() - coll->startTime) / (CLOCK_UNITS_PER_SEC / 1000), nRanks,
+           diagnostics->ctx.hasCommFilter ? "ranks" : "RAS peers");
+  (void)diagnostics->reporter.emit(diagnostics->reporter.target, line);
   if (diagnostics->reporter.finish != nullptr) {
     ncclResult_t finishRet = diagnostics->reporter.finish(diagnostics->reporter.target, ret);
     if (finishRet != ncclSuccess) INFO(NCCL_RAS, "RAS diagnostics reporter finish returned %d", finishRet);

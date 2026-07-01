@@ -5,9 +5,10 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
-#include <inttypes.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mutex>
@@ -17,6 +18,7 @@
 #include "comm.h"
 #include "compiler.h"
 #include "diagnostics.h"
+#include "nvmlwrap.h"
 #include "transport.h"
 
 // Generic local payload helpers shared by all diagnostics checks.
@@ -149,28 +151,8 @@ static const struct rasDiagnosticsRankHeader* rasDiagnosticsRankHeaderFromRecord
   return (const struct rasDiagnosticsRankHeader*)record;
 }
 
-// Emits a common incomplete-gather message for diagnostics checks.
-static ncclResult_t rasDiagnosticsReportIncomplete(const struct rasDiagnosticsReporter* reporter, const char* checkName,
-                                                   const struct rasDiagnosticsRankHeader* rank, int gatheredRanks) {
-  char line[1024];
-
-  snprintf(line, sizeof(line),
-           "%s: diagnostics incomplete, gathered %d/%d ranks in comm 0x%lx/0x%lx/0x%lx "
-           "(RAS overlay may not be ready)",
-           checkName, gatheredRanks, rank->commNRanks, rank->commId.commHash, rank->commId.hostHash,
-           rank->commId.pidHash);
-  NCCLCHECK(reporter->emit(reporter->target, line));
-  return ncclSuccess;
-}
-
-// *************************************************************************
-// NCCL version check.
-// *************************************************************************
-struct rasDiagnosticsNcclVersionData {
-  uint64_t versionCode;
-};
-
-static int rasDiagnosticsNcclVersionRecordCompare(const void* p1, const void* p2) {
+// Orders records by comm, then rank; depends only on the rank header, so all checks share it.
+static int rasDiagnosticsRankHeaderCompare(const void* p1, const void* p2) {
   const struct rasDiagnosticsRankHeader* r1 = (const struct rasDiagnosticsRankHeader*)p1;
   const struct rasDiagnosticsRankHeader* r2 = (const struct rasDiagnosticsRankHeader*)p2;
   int cmp = rasDiagnosticsCommIdCompare(&r1->commId, &r2->commId);
@@ -179,97 +161,207 @@ static int rasDiagnosticsNcclVersionRecordCompare(const void* p1, const void* p2
   return (r1->commRank < r2->commRank ? -1 : (r1->commRank > r2->commRank ? 1 : 0));
 }
 
-static ncclResult_t rasDiagnosticsNcclVersionFillLocalData(const struct rasDiagnosticsCommSnapshot* comm,
-                                                           void* checkData) {
-  struct rasDiagnosticsNcclVersionData* versionData = (struct rasDiagnosticsNcclVersionData*)checkData;
+// Number of individual ranks shown in a mismatch set before it is truncated with a total count.
+#define RAS_DIAG_RANK_SET_MAX 8
 
-  (void)comm; // unused
-  versionData->versionCode = NCCL_VERSION_CODE;
+// Formats a set of ranks as "{a,b,c}", or "{a,b,...} (N=total)" once the set exceeds RAS_DIAG_RANK_SET_MAX.
+static void rasDiagnosticsFormatRankSet(char* buf, size_t bufLen, const int* ranks, int nStored, int nTotal) {
+  int show = nStored < RAS_DIAG_RANK_SET_MAX ? nStored : RAS_DIAG_RANK_SET_MAX;
+  int pos = snprintf(buf, bufLen, "{");
+
+  for (int i = 0; i < show && pos > 0 && (size_t)pos < bufLen; i++) {
+    pos += snprintf(buf + pos, bufLen - pos, "%s%d", i == 0 ? "" : ",", ranks[i]);
+  }
+  if (pos > 0 && (size_t)pos < bufLen) {
+    if (nTotal > show) snprintf(buf + pos, bufLen - pos, ",...} (N=%d)", nTotal);
+    else snprintf(buf + pos, bufLen - pos, "}");
+  }
+}
+
+// Severity tags, space-padded so message text aligns across severities.
+#define RAS_DIAG_TAG_OK "[OK]   "
+#define RAS_DIAG_TAG_INFO "[INFO] "
+
+// Formats a diagnostics line (severity tag + message) and emits it through the (already validated) reporter.
+static ncclResult_t __attribute__((format(printf, 3, 4))) rasDiagnosticsReport(
+  const struct rasDiagnosticsReporter* reporter, const char* tag, const char* fmt, ...) {
+  char line[1024];
+  int pos = snprintf(line, sizeof(line), "%s", tag);
+  if (pos < 0 || (size_t)pos >= sizeof(line)) {
+    WARN("RAS diagnostics report formatting failed");
+    return ncclInternalError;
+  }
+
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(line + pos, sizeof(line) - (size_t)pos, fmt, args);
+  va_end(args);
+  return reporter->emit(reporter->target, line);
+}
+
+static ncclResult_t rasDiagnosticsReportIncomplete(const struct rasDiagnosticsReporter* reporter, const char* checkName,
+                                                   const struct rasDiagnosticsRankHeader* rank, int gatheredRanks) {
+  return rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                              "%s: diagnostics incomplete, gathered %d/%d ranks in comm 0x%lx/0x%lx/0x%lx "
+                              "(RAS overlay may not be ready)",
+                              checkName, gatheredRanks, rank->commNRanks, rank->commId.commHash, rank->commId.hostHash,
+                              rank->commId.pidHash);
+}
+
+// *************************************************************************
+// GPU model and count consistency check.
+// *************************************************************************
+#define RAS_DIAG_GPU_MODEL_NAME_LEN NVML_DEVICE_NAME_BUFFER_SIZE
+#define RAS_DIAG_GPU_MODEL_UNKNOWN "unknown"
+
+struct rasDiagnosticsGpuModelData {
+  uint8_t nGpus;
+  char model[RAS_DIAG_GPU_MODEL_NAME_LEN];
+};
+
+static ncclResult_t rasDiagnosticsGpuModelFillLocalData(const struct rasDiagnosticsCommSnapshot* comm,
+                                                        void* checkData) {
+  struct rasDiagnosticsGpuModelData* gpuData = (struct rasDiagnosticsGpuModelData*)checkData;
+
+  unsigned int nDev = 0;
+
+  gpuData->nGpus = 0;
+  gpuData->model[0] = '\0';
+
+  if (ncclNvmlDeviceGetCount(&nDev) == ncclSuccess) gpuData->nGpus = (uint8_t)nDev;
+  if (comm->nvmlDev >= 0 && comm->nvmlDev < ncclNvmlDeviceCount) {
+    nvmlDevice_t device;
+    if (ncclNvmlDeviceGetHandleByIndex((unsigned int)comm->nvmlDev, &device) == ncclSuccess) {
+      if (ncclNvmlDeviceGetName(device, gpuData->model, sizeof(gpuData->model)) != ncclSuccess) {
+        gpuData->model[0] = '\0';
+      }
+    }
+  }
+
+  if (gpuData->model[0] == '\0') snprintf(gpuData->model, sizeof(gpuData->model), "%s", RAS_DIAG_GPU_MODEL_UNKNOWN);
+  gpuData->model[sizeof(gpuData->model) - 1] = '\0';
   return ncclSuccess;
 }
 
-ncclResult_t rasDiagnosticsNcclVersionCollectLocal(const struct rasDiagnosticsContext* ctx,
-                                                   struct rasDiagnosticsLocalData* data) {
-  NCCLCHECK(rasDiagnosticsCollectLocalRecords(ctx, sizeof(struct rasDiagnosticsNcclVersionData),
-                                              rasDiagnosticsNcclVersionFillLocalData, data));
+ncclResult_t rasDiagnosticsGpuModelCollectLocal(const struct rasDiagnosticsContext* ctx,
+                                                struct rasDiagnosticsLocalData* data) {
+  NCCLCHECK(rasDiagnosticsCollectLocalRecords(ctx, sizeof(struct rasDiagnosticsGpuModelData),
+                                              rasDiagnosticsGpuModelFillLocalData, data));
   return ncclSuccess;
 }
 
-static const struct rasDiagnosticsNcclVersionData* rasDiagnosticsNcclVersionDataFromRecord(const char* record) {
-  return (const struct rasDiagnosticsNcclVersionData*)(record + sizeof(struct rasDiagnosticsRankHeader));
+static const struct rasDiagnosticsGpuModelData* rasDiagnosticsGpuModelDataFromRecord(const char* record) {
+  return (const struct rasDiagnosticsGpuModelData*)(record + sizeof(struct rasDiagnosticsRankHeader));
 }
 
-ncclResult_t rasDiagnosticsNcclVersionSummarize(
+ncclResult_t rasDiagnosticsGpuModelSummarize(
   const struct rasDiagnosticsContext* ctx, const struct rasDiagnosticsReporter* reporter, const char* data, int nData) {
   ncclResult_t ret = ncclSuccess;
   char* records = nullptr;
-  const size_t recordStride = rasDiagnosticsLocalRecordStride(sizeof(struct rasDiagnosticsNcclVersionData));
+  const size_t recordStride = rasDiagnosticsLocalRecordStride(sizeof(struct rasDiagnosticsGpuModelData));
   int nRecords;
 
-  (void)ctx; // unused
+  (void)ctx;
 
   if (reporter == nullptr || reporter->emit == nullptr) {
-    WARN("RAS diagnostics NCCL version check received invalid reporter");
+    WARN("RAS diagnostics GPU model check received invalid reporter");
     return ncclInternalError;
   }
   if (nData == 0) return ncclSuccess;
   if (data == nullptr) {
-    WARN("RAS diagnostics NCCL version check received null data with size %d", nData);
+    WARN("RAS diagnostics GPU model check received null data with size %d", nData);
     return ncclInternalError;
   }
   if (nData < 0 || nData % (int)recordStride != 0) {
-    WARN("RAS diagnostics NCCL version check received malformed data size %d", nData);
+    WARN("RAS diagnostics GPU model check received malformed data size %d", nData);
     return ncclInternalError;
   }
 
   nRecords = nData / (int)recordStride;
   NCCLCHECK(ncclCalloc(&records, nData));
   memcpy(records, data, nData);
-  qsort(records, nRecords, recordStride, rasDiagnosticsNcclVersionRecordCompare);
+  qsort(records, nRecords, recordStride, rasDiagnosticsRankHeaderCompare);
 
   for (int start = 0; start < nRecords;) {
     const char* startRecord = records + start * recordStride;
     const struct rasDiagnosticsRankHeader* startRank = rasDiagnosticsRankHeaderFromRecord(startRecord);
-    uint64_t expectedVersionCode = rasDiagnosticsNcclVersionDataFromRecord(startRecord)->versionCode;
+    const struct rasDiagnosticsGpuModelData* startData = rasDiagnosticsGpuModelDataFromRecord(startRecord);
     int expectedRank = startRank->commRank;
     int commNRanks = startRank->commNRanks;
-    uint64_t mismatchVersionCode = expectedVersionCode;
-    int mismatchRank = expectedRank;
-    bool foundMismatch = false;
+    int expectedNGpus = startData->nGpus;
+    int countMismatchRanks[RAS_DIAG_RANK_SET_MAX];
+    int modelMismatchRanks[RAS_DIAG_RANK_SET_MAX];
+    int nCountMismatchStored = 0, nCountMismatch = 0;
+    int nModelMismatchStored = 0, nModelMismatch = 0;
+    const char* expectedModel = startData->model;
     int end = start + 1;
 
     while (end < nRecords) {
       const char* record = records + end * recordStride;
       const struct rasDiagnosticsRankHeader* rank = rasDiagnosticsRankHeaderFromRecord(record);
-      uint64_t versionCode = rasDiagnosticsNcclVersionDataFromRecord(record)->versionCode;
+      const struct rasDiagnosticsGpuModelData* gpuData = rasDiagnosticsGpuModelDataFromRecord(record);
 
       if (rasDiagnosticsCommIdCompare(&startRank->commId, &rank->commId) != 0) break;
-      if (!foundMismatch && versionCode != expectedVersionCode) {
-        foundMismatch = true;
-        mismatchVersionCode = versionCode;
-        mismatchRank = rank->commRank;
+      if (gpuData->nGpus != expectedNGpus) {
+        if (nCountMismatchStored < RAS_DIAG_RANK_SET_MAX) countMismatchRanks[nCountMismatchStored++] = rank->commRank;
+        nCountMismatch++;
+      }
+      if (strncmp(gpuData->model, expectedModel, RAS_DIAG_GPU_MODEL_NAME_LEN) != 0) {
+        if (nModelMismatchStored < RAS_DIAG_RANK_SET_MAX) modelMismatchRanks[nModelMismatchStored++] = rank->commRank;
+        nModelMismatch++;
       }
       end++;
     }
 
     if (end - start != commNRanks) {
-      NCCLCHECKGOTO(rasDiagnosticsReportIncomplete(reporter, "NCCL version", startRank, end - start), ret, exit);
-    } else if (!foundMismatch) {
-      char line[1024];
-      snprintf(line, sizeof(line),
-               "NCCL version: %" PRIu64 ".%" PRIu64 ".%" PRIu64
-               " consistent across %d/%d ranks in comm 0x%lx/0x%lx/0x%lx",
-               expectedVersionCode / 10000, (expectedVersionCode / 100) % 100, expectedVersionCode % 100, end - start,
-               commNRanks, startRank->commId.commHash, startRank->commId.hostHash, startRank->commId.pidHash);
-      NCCLCHECKGOTO(reporter->emit(reporter->target, line), ret, exit);
+      NCCLCHECKGOTO(rasDiagnosticsReportIncomplete(reporter, "GPU inventory", startRank, end - start), ret, exit);
+    } else if (nCountMismatch == 0 && nModelMismatch == 0) {
+      bool countKnown = expectedNGpus > 0;
+      bool modelKnown = strncmp(expectedModel, RAS_DIAG_GPU_MODEL_UNKNOWN, RAS_DIAG_GPU_MODEL_NAME_LEN) != 0;
+      if (countKnown && modelKnown) {
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_OK,
+                                           "GPU inventory: %dx %s per node consistent across %d ranks in comm 0x%lx",
+                                           expectedNGpus, expectedModel, commNRanks, startRank->commId.commHash),
+                      ret, exit);
+      } else if (countKnown) {
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                                           "GPU inventory: %d GPUs per node consistent across %d ranks in comm 0x%lx, "
+                                           "GPU model unavailable via NVML",
+                                           expectedNGpus, commNRanks, startRank->commId.commHash),
+                      ret, exit);
+      } else if (modelKnown) {
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                                           "GPU inventory: %s per node consistent across %d ranks in comm 0x%lx, "
+                                           "GPU count unavailable via NVML",
+                                           expectedModel, commNRanks, startRank->commId.commHash),
+                      ret, exit);
+      } else {
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                                           "GPU inventory: unavailable via NVML across %d ranks in comm 0x%lx",
+                                           commNRanks, startRank->commId.commHash),
+                      ret, exit);
+      }
     } else {
-      char line[1024];
-      snprintf(line, sizeof(line),
-               "NCCL version: mismatch across %d/%d ranks in comm 0x%lx/0x%lx/0x%lx "
-               "rank %d has %" PRIu64 ", rank %d has %" PRIu64,
-               end - start, commNRanks, startRank->commId.commHash, startRank->commId.hostHash,
-               startRank->commId.pidHash, expectedRank, expectedVersionCode, mismatchRank, mismatchVersionCode);
-      NCCLCHECKGOTO(reporter->emit(reporter->target, line), ret, exit);
+      if (nCountMismatch > 0) {
+        char rankSet[128];
+        rasDiagnosticsFormatRankSet(rankSet, sizeof(rankSet), countMismatchRanks, nCountMismatchStored, nCountMismatch);
+        NCCLCHECKGOTO(
+          rasDiagnosticsReport(
+            reporter, RAS_DIAG_TAG_INFO,
+            "GPU inventory: count mismatch across %d ranks in comm 0x%lx, rank(s) %s differ from rank %d (%d)",
+            commNRanks, startRank->commId.commHash, rankSet, expectedRank, expectedNGpus),
+          ret, exit);
+      }
+      if (nModelMismatch > 0) {
+        char rankSet[128];
+        rasDiagnosticsFormatRankSet(rankSet, sizeof(rankSet), modelMismatchRanks, nModelMismatchStored, nModelMismatch);
+        NCCLCHECKGOTO(
+          rasDiagnosticsReport(
+            reporter, RAS_DIAG_TAG_INFO,
+            "GPU inventory: model mismatch across %d ranks in comm 0x%lx, rank(s) %s differ from rank %d (%s)",
+            commNRanks, startRank->commId.commHash, rankSet, expectedRank, expectedModel),
+          ret, exit);
+      }
     }
 
     start = end;

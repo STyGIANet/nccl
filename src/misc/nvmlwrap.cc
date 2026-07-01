@@ -33,6 +33,7 @@ NCCL_NVML_FN(nvmlDeviceGetCount_v2, nvmlReturn_t, (unsigned int*))
 NCCL_NVML_FN(nvmlDeviceGetHandleByPciBusId, nvmlReturn_t, (const char* pciBusId, nvmlDevice_t* device))
 NCCL_NVML_FN(nvmlDeviceGetHandleByIndex, nvmlReturn_t, (unsigned int index, nvmlDevice_t* device))
 NCCL_NVML_FN(nvmlDeviceGetIndex, nvmlReturn_t, (nvmlDevice_t device, unsigned* index))
+NCCL_NVML_FN(nvmlDeviceGetName, nvmlReturn_t, (nvmlDevice_t device, char* name, unsigned int length))
 NCCL_NVML_FN(nvmlErrorString, char const*, (nvmlReturn_t r))
 NCCL_NVML_FN(nvmlDeviceGetNvLinkState, nvmlReturn_t,
              (nvmlDevice_t device, unsigned int link, nvmlEnableState_t* isActive))
@@ -103,6 +104,7 @@ ncclResult_t ncclNvmlEnsureInitialized() {
       {(void**)&pfn_nvmlDeviceGetHandleByPciBusId, "nvmlDeviceGetHandleByPciBusId"},
       {(void**)&pfn_nvmlDeviceGetHandleByIndex, "nvmlDeviceGetHandleByIndex"},
       {(void**)&pfn_nvmlDeviceGetIndex, "nvmlDeviceGetIndex"},
+      {(void**)&pfn_nvmlDeviceGetName, "nvmlDeviceGetName"},
       {(void**)&pfn_nvmlErrorString, "nvmlErrorString"},
       {(void**)&pfn_nvmlDeviceGetNvLinkState, "nvmlDeviceGetNvLinkState"},
       {(void**)&pfn_nvmlDeviceGetNvLinkRemotePciInfo, "nvmlDeviceGetNvLinkRemotePciInfo"},
@@ -236,6 +238,31 @@ ncclResult_t ncclNvmlDeviceGetHandleByPciBusId(const char* pciBusId, nvmlDevice_
 ncclResult_t ncclNvmlDeviceGetHandleByIndex(unsigned int index, nvmlDevice_t* device) {
   NCCLCHECK(ncclNvmlEnsureInitialized());
   *device = ncclNvmlDevices[index].handle;
+  return ncclSuccess;
+}
+
+ncclResult_t ncclNvmlDeviceGetName(nvmlDevice_t device, char* name, unsigned int length) {
+  NCCLCHECK(ncclNvmlEnsureInitialized());
+  std::lock_guard<std::mutex> locked(lock);
+  NVMLTRY(nvmlDeviceGetName, device, name, length);
+  return ncclSuccess;
+}
+
+// Re-queries NVML on each call, unlike the cached ncclNvmlDeviceCount global.
+ncclResult_t ncclNvmlDeviceGetCount(unsigned int* deviceCount) {
+  NCCLCHECK(ncclNvmlEnsureInitialized());
+  std::lock_guard<std::mutex> locked(lock);
+#if NCCL_NVML_DIRECT
+  bool have_v2 = true;
+#else
+  // if this compare is done in the NCCL_NVML_DIRECT=1 case then GCC warns about it never being null
+  bool have_v2 = pfn_nvmlInit_v2 != nullptr;
+#endif
+  if (have_v2) {
+    NVMLTRY(nvmlDeviceGetCount_v2, deviceCount);
+  } else {
+    NVMLTRY(nvmlDeviceGetCount, deviceCount);
+  }
   return ncclSuccess;
 }
 
