@@ -1016,6 +1016,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     int localNetDeviceBw;
     int localCollNetCount;
     int isAllNvlink;
+    int diagMode;
   };
 
   int nChannelsOrig;
@@ -1027,6 +1028,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   struct ncclProxyConnector proxyConn;
   int* pxnPeers = NULL;
   int* topParentLocalRanks = NULL;
+  int diagMode = NCCL_RAS_DIAG_OFF;
   int p2pLevel = -1;
   uint64_t globalGinTypeBitMask = UINT64_MAX;
   bool globalCrossNicSupport = true;
@@ -1319,6 +1321,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   NCCLCHECK(ncclTopoPathAllNVLink(comm->topo, &comm->isAllNvlink));
   allGather3Data[rank].isAllNvlink = comm->isAllNvlink;
+  diagMode = allGather3Data[rank].diagMode = ncclRasDiagGetMode(comm);
 
   comm->nChannels = std::min(treeGraph->nChannels, ringGraph->nChannels);
   NCCLCHECKGOTO(ncclTopoPreset(comm, graphs, &allGather3Data[rank].topoRanks), ret, fail);
@@ -1353,6 +1356,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     maxLocalNetCount = std::max(maxLocalNetCount, allGather3Data[r].localNetDeviceCount);
     minLocalCollNetCount = std::min(minLocalCollNetCount, allGather3Data[r].localCollNetCount);
     maxLocalCollNetCount = std::max(maxLocalCollNetCount, allGather3Data[r].localCollNetCount);
+    diagMode = std::min(diagMode, allGather3Data[r].diagMode);
     if (!allGather3Data[r].isAllNvlink) {
       comm->isAllNvlink = 0;
     }
@@ -1573,6 +1577,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   }
   NCCLCHECKGOTO(ncclCalloc(&comm->gproxyConn, comm->nRanks), ret, fail);
 
+  if (diagMode != NCCL_RAS_DIAG_OFF && rank == 0) (void)ncclRasPassiveDiagTrigger(comm);
   timers[TIMER_INIT_CONNECT] = clockNano();
   // Build p2p schedule
   comm->p2pSchedule = ncclMemoryStackAlloc<ncclComm::P2pSchedulePair>(&comm->memPermanent, comm->nRanks);

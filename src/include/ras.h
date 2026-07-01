@@ -20,8 +20,16 @@ struct rasRankInit {
   uint64_t pidHash;
 };
 
+typedef enum {
+  NCCL_RAS_DIAG_OFF = 0,
+  NCCL_RAS_DIAG_PASSIVE = 1,
+  NCCL_RAS_DIAG_ACTIVE = 2,
+} ncclRasDiagMode;
+
 ncclResult_t ncclRasCommInit(struct ncclComm* comm, struct rasRankInit* myRank);
 ncclResult_t ncclRasCommFini(const struct ncclComm* comm);
 ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks);
+ncclRasDiagMode ncclRasDiagGetMode(const struct ncclComm* comm);
+ncclResult_t ncclRasPassiveDiagTrigger(struct ncclComm* comm);
 
 #endif // !NCCL_RAS_H_

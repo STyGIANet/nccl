@@ -13,7 +13,9 @@
 #include "alloc.h"
 #include "checks.h"
 #include "comm.h"
+#include "diagnostics.h"
 #include "nccl.h"
+#include "param/param.h"
 #include "utils.h"
 #include "ras_internal.h"
 #include "os.h"
@@ -22,7 +24,8 @@
 // Type of a notification from a local NCCL thread.
 typedef enum {
   RAS_ADD_RANKS = 0,
-  RAS_TERMINATE = 1
+  RAS_TERMINATE = 1,
+  RAS_RUN_DIAG = 2
 } rasNotificationType;
 
 // Used for communication from local NCCL threads to the RAS thread.
@@ -33,6 +36,9 @@ struct rasNotification {
       struct rasRankInit* ranks;
       int nranks;
     } addRanks;
+    struct {
+      struct rasDiagnosticsContext ctx;
+    } runDiag;
   };
 };
 static_assert(sizeof(struct rasNotification) <= PIPE_BUF, "The rasNotification structure is too large");
@@ -50,6 +56,18 @@ static std::thread rasThread;
 // Used for communication from regular NCCL threads to the RAS thread.
 static std::mutex rasNotificationMutex;
 static ncclSocketPairDescriptor rasNotificationPipe[2] = {NCCL_SOCKET_PAIR_INVALID, NCCL_SOCKET_PAIR_INVALID};
+
+// clang-format off
+DEFINE_NCCL_PARAM(ncclParamDiagnostics, ncclRasDiagMode, NCCL_DIAGNOSTICS, NCCL_RAS_DIAG_OFF,
+                  NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_CACHED,
+                  ncclParamOneOf<ncclRasDiagMode>(makeOptions(
+                    makeOption("off", NCCL_RAS_DIAG_OFF, "Disable diagnostics"),
+                    makeOption("0", NCCL_RAS_DIAG_OFF, "Disable diagnostics"),
+                    makeOption("passive", NCCL_RAS_DIAG_PASSIVE, "Run passive diagnostics"),
+                    makeOption("1", NCCL_RAS_DIAG_PASSIVE, "Alias for passive"),
+                    makeOption("active", NCCL_RAS_DIAG_ACTIVE, "Run active diagnostics")
+                  )), "Enable NCCL diagnostics");
+// clang-format on
 
 // Data for the main poll() in the RAS thread.
 struct pollfd* rasPfds;
@@ -179,6 +197,53 @@ ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
   return ncclSuccess;
 }
 
+// Returns whether this parent communicator should start the one-shot init diagnostics gather.
+static bool ncclRasDiagShouldTrigger(const struct ncclComm* comm) {
+  if (comm == nullptr || comm->sharedRes == nullptr || comm->sharedRes->owner != comm) return false;
+  if (!rasInitialized) return false;
+
+  std::lock_guard<std::mutex> lock(ncclCommsMutex);
+  if (ncclComms == nullptr) return false;
+  for (int i = 0; i < nNcclComms; i++) {
+    struct ncclComm* other = ncclComms[i];
+    if (other == nullptr || other == comm || other->cudaDev != comm->cudaDev) continue;
+    if (other->finalizeCalled || other->destroyFlag) continue;
+    if (other->abortFlag != nullptr && COMPILER_ATOMIC_LOAD(other->abortFlag, std::memory_order_acquire) != 0) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// Returns the diagnostics mode this rank can participate in for init diagnostics.
+ncclRasDiagMode ncclRasDiagGetMode(const struct ncclComm* comm) {
+#if defined(NCCL_OS_LINUX)
+  ncclRasDiagMode diagMode = ncclParamDiagnostics();
+  if (diagMode != NCCL_RAS_DIAG_OFF && ncclRasDiagShouldTrigger(comm)) return diagMode;
+#endif
+  return NCCL_RAS_DIAG_OFF;
+}
+
+// Requests the RAS thread to run passive diagnostics for this communicator.
+ncclResult_t ncclRasPassiveDiagTrigger(struct ncclComm* comm) {
+  struct rasNotification msg;
+  ncclResult_t ret = ncclSuccess;
+
+  memset(&msg, '\0', sizeof(msg));
+  msg.type = RAS_RUN_DIAG;
+  ret = rasDiagnosticsContextInit(&msg.runDiag.ctx, comm);
+  if (ret == ncclSuccess) ret = rasLocalNotify(&msg);
+  if (ret != ncclSuccess) {
+    if (comm != nullptr) {
+      INFO(NCCL_RAS, "RAS passive diagnostics trigger returned %d for comm 0x%lx", ret, comm->commHash);
+    } else {
+      INFO(NCCL_RAS, "RAS passive diagnostics trigger returned %d", ret);
+    }
+  }
+  return ret;
+}
+
 // Internal function running on regular NCCL threads -- asynchronously notifies the RAS thread.
 static ncclResult_t rasLocalNotify(const struct rasNotification* msg) {
   if (!rasInitialized) return ncclSuccess;
@@ -217,6 +282,9 @@ static ncclResult_t rasLocalHandle(bool* terminate) {
   if (msg.type == RAS_ADD_RANKS) {
     (void)rasLocalHandleAddRanks(msg.addRanks.ranks, msg.addRanks.nranks);
     // Not great if the above fails, but it shouldn't be critical; better to keep going.
+  } else if (msg.type == RAS_RUN_DIAG) {
+    ncclResult_t ret = rasLocalHandleRunDiag(&msg.runDiag.ctx);
+    if (ret != ncclSuccess) INFO(NCCL_RAS, "RAS diagnostics returned %d", ret);
   } else if (msg.type == RAS_TERMINATE) {
     INFO(NCCL_RAS, "RAS handling local termination request");
     *terminate = true;

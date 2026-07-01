@@ -40,6 +40,7 @@ static const char* port = STR(NCCL_RAS_CLIENT_PORT);
 static double timeout = -1.0;
 static bool verbose = false;
 static bool monitorMode = false;
+static bool diagnosticsMode = false;
 static const char* format = nullptr;
 static const char* events = nullptr;
 static int sock = -1;
@@ -50,6 +51,7 @@ static void printUsage(const char* argv0) {
           "Usage: %s [OPTION]...\n"
           "Query the state of a running NCCL job.\n"
           "\nOptions:\n"
+          "  -D, --diagnostics   Run NCCL diagnostics via RAS (NCCL_DIAGNOSTICS=passive)\n"
           "  -f, --format=FMT    Output format: text or json (text by default)\n"
           "  -h, --host=HOST     Host name or IP address of the RAS client socket of the\n"
           "                      NCCL job to connect to (localhost by default)\n"
@@ -73,20 +75,24 @@ static void parseArgs(int argc, char** argv) {
   int optIdx = 0;
   // clang-format off
   struct option longOpts[] = {
-    {"format",  required_argument, NULL, 'f'},
-    {"help",    no_argument,       NULL, 'e'},
-    {"host",    required_argument, NULL, 'h'},
-    {"monitor", optional_argument, NULL, 'm'},
-    {"port",    required_argument, NULL, 'p'},
-    {"timeout", required_argument, NULL, 't'},
-    {"verbose", no_argument,       NULL, 'v'},
-    {"version", no_argument,       NULL, 'r'},
+    {"diagnostics", no_argument,       NULL, 'D'},
+    {"format",      required_argument, NULL, 'f'},
+    {"help",        no_argument,       NULL, 'e'},
+    {"host",        required_argument, NULL, 'h'},
+    {"monitor",     optional_argument, NULL, 'm'},
+    {"port",        required_argument, NULL, 'p'},
+    {"timeout",     required_argument, NULL, 't'},
+    {"verbose",     no_argument,       NULL, 'v'},
+    {"version",     no_argument,       NULL, 'r'},
     {0}
   };
   // clang-format on
 
-  while ((c = getopt_long(argc, argv, "f:h:m::p:t:v", longOpts, &optIdx)) != -1) {
+  while ((c = getopt_long(argc, argv, "Df:h:m::p:t:v", longOpts, &optIdx)) != -1) {
     switch (c) {
+    case 'D':
+      diagnosticsMode = true;
+      break;
     case 'f':
       format = optarg;
       if (strcasecmp(format, "text") != 0 && strcasecmp(format, "json") != 0) {
@@ -349,19 +355,12 @@ static int setOutputFormat() {
   return 0;
 }
 
-static int getNCCLStatus() {
+static int streamRasResponseToStdout() {
   char msgBuf[4096];
-  int bytes;
+  ssize_t bytes;
 
-  // Send the status command.
-  snprintf(msgBuf, sizeof(msgBuf), "%sSTATUS\n", (verbose ? "VERBOSE " : ""));
-  if (socketWrite(sock, msgBuf, strlen(msgBuf)) != strlen(msgBuf)) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
-    else perror("write to socket");
-    return 1;
-  }
   for (;;) {
-    bytes = rasRead(sock, msgBuf, sizeof(msgBuf), /*untileNewLine*/ false);
+    bytes = rasRead(sock, msgBuf, sizeof(msgBuf), /*untilNewline*/ false);
     if (bytes < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
       else perror("read socket");
@@ -371,7 +370,7 @@ static int getNCCLStatus() {
       // EOF
       break;
     }
-    if (fwrite(msgBuf, 1, bytes, stdout) != bytes) {
+    if (fwrite(msgBuf, 1, bytes, stdout) != (size_t)bytes) {
       fprintf(stderr, "fwrite to stdout failed!\n");
       return 1;
     }
@@ -381,6 +380,31 @@ static int getNCCLStatus() {
     }
   }
   return 0;
+}
+
+static int getNCCLStatus() {
+  char msgBuf[4096];
+
+  // Send the status command.
+  snprintf(msgBuf, sizeof(msgBuf), "%sSTATUS\n", (verbose ? "VERBOSE " : ""));
+  if (socketWrite(sock, msgBuf, strlen(msgBuf)) != strlen(msgBuf)) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
+    else perror("write to socket");
+    return 1;
+  }
+  return streamRasResponseToStdout();
+}
+
+static int runNCCLDiagnostics() {
+  char msgBuf[4096];
+
+  snprintf(msgBuf, sizeof(msgBuf), "DIAGNOSTICS\n");
+  if (socketWrite(sock, msgBuf, strlen(msgBuf)) != strlen(msgBuf)) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) fprintf(stderr, "Connection timed out\n");
+    else perror("write to socket");
+    return 1;
+  }
+  return streamRasResponseToStdout();
 }
 
 static int monitorNCCLEvents() {
@@ -490,6 +514,8 @@ int main(int argc, char** argv) {
   int result;
   if (monitorMode) {
     result = monitorNCCLEvents();
+  } else if (diagnosticsMode) {
+    result = runNCCLDiagnostics();
   } else {
     result = getNCCLStatus();
   }

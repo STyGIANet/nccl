@@ -42,6 +42,16 @@ ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
   return ncclSuccess;
 }
 
+ncclRasDiagMode ncclRasDiagGetMode(const struct ncclComm* comm) {
+  (void)comm;
+  return NCCL_RAS_DIAG_OFF;
+}
+
+ncclResult_t ncclRasPassiveDiagTrigger(struct ncclComm* comm) {
+  (void)comm;
+  return ncclSuccess;
+}
+
 ncclResult_t ncclRasCommFini(const struct ncclComm* comm) {
   (void)comm;
   return ncclSuccess;
