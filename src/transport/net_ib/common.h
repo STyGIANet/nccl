@@ -116,9 +116,16 @@ extern struct ncclIbDev ncclIbDevs[MAX_IB_DEVS];
 extern int ncclIbRelaxedOrderingEnabled;
 extern uint64_t ncclIbSpeedChangeCounter;
 extern int64_t ncclParamIbEventBasedLb();
+extern int64_t ncclParamIbEventBasedLbRemote();
 
 #define NCCL_IB_LLSTR(ll) \
   (((ll) == IBV_LINK_LAYER_INFINIBAND) ? "IB" : (((ll) == IBV_LINK_LAYER_ETHERNET) ? "RoCE" : "UNSPECIFIED"))
+
+struct alignas(32) ncclIbRemoteSpeedBuf {
+  volatile uint64_t counter;
+  uint16_t speedGbps[NCCL_IB_MAX_DEVS_PER_NIC];
+};
+static_assert(sizeof(ncclIbRemoteSpeedBuf) == 32);
 
 // Per-Dev connection metadata
 struct ncclIbDevInfo {
@@ -142,6 +149,9 @@ struct ncclIbDevInfo {
 
   // remote dev info
   union ibv_gid remoteGid;
+
+  uint64_t currSpeed;
+  uint32_t remSpeedBufRkey;
 };
 
 // Retain local RoCE address for error logging
@@ -376,7 +386,6 @@ static inline void ncclIbComputeLbWeights(struct ncclIbNetCommBase* base) {
   // totalSpeed can not be 0: devices with inactive ports (speed 0) are
   // skipped at init, and speed-to-zero events are skipped in
   // ncclIbUpdateDeviceSpeed (port-failover handles those).
-  assert(base->totalSpeed > 0);
   uint8_t totalWeight = 0;
   for (int d = 0; d < ndevs; d++) {
     base->weights[d] = ncclParamIbEventBasedLb() ? (base->devSpeeds[d] * 100 / base->totalSpeed) : (100 / ndevs);
@@ -393,7 +402,10 @@ static inline void ncclIbComputeDevSpeeds(struct ncclIbNetCommBase* base) {
   uint64_t totalSpeed = 0;
   for (int d = 0; d < base->vProps.ndevs; d++) {
     int ibDevN = ncclIbGetNetCommDevBase(base, d)->ibDevN;
-    base->devSpeeds[d] = COMPILER_ATOMIC_LOAD(&ncclIbDevs[ibDevN].currSpeed, std::memory_order_relaxed);
+    int remDevIdx = base->qps[d].remDevIdx;
+    uint64_t localSpeed = COMPILER_ATOMIC_LOAD(&ncclIbDevs[ibDevN].currSpeed, std::memory_order_relaxed);
+    uint64_t remoteSpeed = (base->remDevs[remDevIdx].currSpeed > 0) ? base->remDevs[remDevIdx].currSpeed : localSpeed;
+    base->devSpeeds[d] = std::min(localSpeed, remoteSpeed);
     totalSpeed += base->devSpeeds[d];
   }
   base->totalSpeed = totalSpeed;
@@ -510,6 +522,10 @@ struct ncclIbSendComm {
   struct ncclIbRemCompletionsRecords remCmplsRecords;
   int ar; // Use adaptive routing when all merged devices have it enabled
   uint64_t putSignalScratchpad;
+
+  struct ncclIbRemoteSpeedBuf remoteSpeedBuf;
+  struct ibv_mr* remoteSpeedMr;
+  uint64_t remoteSpeedCounter;
 };
 // The SendFifo needs to be 32-byte aligned and each element needs
 // to be a 32-byte multiple, so that an entry does not get split and
@@ -560,9 +576,11 @@ struct alignas(16) ncclIbRecvCommDev {
   // posts RDMA operations. The SGE is populated by the address of the memory
   // in which the CTS message formatted on the receiver is placed.
   struct ibv_sge sge;
+  struct ibv_mr* speedUpdateMr;
 };
 
 #define NCCL_IB_RECV_WR_ID_DUMMY UINT64_MAX
+#define NCCL_IB_SPEED_UPDATE_WR_ID (UINT64_MAX - 1)
 
 struct ncclIbRecvComm {
   struct ncclIbNetCommBase base;
@@ -587,6 +605,12 @@ struct ncclIbRecvComm {
   // To avoid allocation and memset on the data-path a single structure is used
   // and only the wr_id is updated before posting a receive work request.
   struct ibv_recv_wr ibRecvWorkRequest;
+
+  uint64_t remSpeedBufAddr;
+  struct ncclIbRemoteSpeedBuf speedUpdateBuf;
+  uint16_t lastSentSpeeds[NCCL_IB_MAX_DEVS_PER_NIC];
+  uint64_t lastSentCounter;
+  bool postedSpeedUpdate;
 };
 static_assert((offsetof(struct ncclIbRecvComm, remCtsFifo) % 32) == 0,
               "ncclIbRecvComm ctsFifo must be 32-byte aligned");
@@ -600,6 +624,28 @@ struct ncclIbListenComm {
   struct ncclSocket sock;
   struct ncclIbCommStage* stage;
 };
+
+static inline void ncclIbCheckSpeedChanges(struct ncclIbSendComm* sendComm, struct ncclIbNetCommBase* base) {
+  bool speedChanged = false;
+  // Local speed change detection
+  if (base->speedChangeCounter != COMPILER_ATOMIC_LOAD(&ncclIbSpeedChangeCounter, std::memory_order_acquire)) {
+    base->speedChangeCounter = COMPILER_ATOMIC_LOAD(&ncclIbSpeedChangeCounter, std::memory_order_acquire);
+    speedChanged = true;
+  }
+  // Remote speed change detection
+  if (sendComm->remoteSpeedCounter !=
+      COMPILER_ATOMIC_LOAD(&sendComm->remoteSpeedBuf.counter, std::memory_order_acquire)) {
+    sendComm->remoteSpeedCounter = COMPILER_ATOMIC_LOAD(&sendComm->remoteSpeedBuf.counter, std::memory_order_acquire);
+    for (int i = 0; i < base->nRemDevs; i++) {
+      base->remDevs[i].currSpeed = (uint64_t)sendComm->remoteSpeedBuf.speedGbps[i] * 1000;
+    }
+    speedChanged = true;
+  }
+  if (speedChanged) {
+    ncclIbComputeDevSpeeds(base);
+    ncclIbComputeLbWeights(base);
+  }
+}
 
 static ncclResult_t ncclIbStatsInit(struct ncclIbStats* stat) {
   COMPILER_ATOMIC_STORE(&stat->fatalErrorCount, 0, std::memory_order_relaxed);

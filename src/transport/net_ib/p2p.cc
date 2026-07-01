@@ -715,16 +715,51 @@ static inline ncclResult_t ncclIbRequestComplete(struct ncclIbRequest* r, int* d
       // following send requests on the same slot.
       memset(&sendComm->sendReqs[slot], 0, sizeof(sendComm->sendReqs[slot]));
       // In case of event-based LB, detect any speed change and update the device speeds
-      if (ncclParamIbEventBasedLb() &&
-          r->base->speedChangeCounter != COMPILER_ATOMIC_LOAD(&ncclIbSpeedChangeCounter, std::memory_order_acquire)) {
-        r->base->speedChangeCounter = COMPILER_ATOMIC_LOAD(&ncclIbSpeedChangeCounter, std::memory_order_acquire);
-        ncclIbComputeDevSpeeds(r->base);
-        ncclIbComputeLbWeights(r->base);
-      }
+      if (ncclParamIbEventBasedLb()) ncclIbCheckSpeedChanges(sendComm, r->base);
     }
   }
   // Stop all remaining Qp events for this event
   NCCLCHECK(ncclIbFreeRequest(r));
+  return ncclSuccess;
+}
+
+static ncclResult_t ncclIbPostSpeedUpdateToRemote(struct ncclIbRecvComm* comm) {
+  uint64_t counter = COMPILER_ATOMIC_LOAD(&ncclIbSpeedChangeCounter, std::memory_order_acquire);
+  if (counter == comm->base.speedChangeCounter || comm->remSpeedBufAddr == 0 || comm->postedSpeedUpdate) {
+    return ncclSuccess;
+  }
+
+  int nDevs = comm->base.vProps.ndevs;
+  uint16_t newSpeedsGbps[NCCL_IB_MAX_DEVS_PER_NIC] = {};
+  for (int i = 0; i < nDevs; i++)
+    newSpeedsGbps[i] =
+      (uint16_t)(COMPILER_ATOMIC_LOAD(&ncclIbDevs[comm->base.vProps.devs[i]].currSpeed, std::memory_order_relaxed) /
+                 1000);
+
+  comm->base.speedChangeCounter = counter;
+  if (memcmp(newSpeedsGbps, comm->lastSentSpeeds, nDevs * sizeof(uint16_t)) == 0) return ncclSuccess;
+
+  int devIdx = comm->base.qps[0].devIndex;
+  int remDevIdx = comm->base.qps[0].remDevIdx;
+  comm->speedUpdateBuf.counter = comm->lastSentCounter + 1;
+  memcpy(comm->speedUpdateBuf.speedGbps, newSpeedsGbps, nDevs * sizeof(uint16_t));
+
+  struct ibv_send_wr wr = {}, *bad_wr;
+  struct ibv_sge sge = {};
+  sge.addr = (uint64_t)&comm->speedUpdateBuf;
+  sge.length = sizeof(ncclIbRemoteSpeedBuf);
+  sge.lkey = comm->devs[devIdx].speedUpdateMr->lkey;
+  wr.wr_id = NCCL_IB_SPEED_UPDATE_WR_ID;
+  wr.opcode = IBV_WR_RDMA_WRITE;
+  wr.send_flags = IBV_SEND_SIGNALED;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+  wr.wr.rdma.remote_addr = comm->remSpeedBufAddr;
+  wr.wr.rdma.rkey = comm->base.remDevs[remDevIdx].remSpeedBufRkey;
+  comm->postedSpeedUpdate = true;
+  NCCLCHECK(wrap_ibv_post_send(comm->base.qps[0].qp, &wr, &bad_wr));
+  memcpy(comm->lastSentSpeeds, newSpeedsGbps, nDevs * sizeof(uint16_t));
+  comm->lastSentCounter = comm->speedUpdateBuf.counter;
   return ncclSuccess;
 }
 
@@ -754,6 +789,12 @@ static ncclResult_t ncclIbLogCompletionWithError(struct ncclIbNetCommBase* commB
 
 static inline ncclResult_t ncclIbCompletionEventProcess(struct ncclIbNetCommBase* commBase, struct ibv_wc* wc,
                                                         int devIndex) {
+  if (wc->wr_id == NCCL_IB_SPEED_UPDATE_WR_ID) {
+    struct ncclIbRecvComm* rComm = (struct ncclIbRecvComm*)commBase;
+    rComm->postedSpeedUpdate = false;
+    return ncclSuccess;
+  }
+
   union ncclSocketAddress addr;
   ncclSocketGetAddr(&commBase->sock, &addr);
 
@@ -856,6 +897,9 @@ static inline ncclResult_t ncclIbCompletionEventProcess(struct ncclIbNetCommBase
              be32toh(wc->imm_data));
         return ncclSuccess;
       }
+      // On CTS completion, propagate any local speed changes to the remote sender
+      if (ncclParamIbEventBasedLb() && ncclParamIbEventBasedLbRemote())
+        NCCLCHECK(ncclIbPostSpeedUpdateToRemote((struct ncclIbRecvComm*)commBase));
     } else {
       WARN("NET/IB: Unknown completion (req=%p, comm=%p, id=%ld, devIndex=%d, req->type=%s, wc.wr_id=%ld, "
            "wc.opcode=%s(%d), wc.qp_num=%u, wc.imm_data=%d)",
@@ -912,6 +956,12 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
       for (int w = 0; w < wrDone; w++) {
         struct ibv_wc* wc = wcs + w;
         if (wc->status != IBV_WC_SUCCESS) {
+          // Speed update write failure is non-fatal; clear the pending flag so future updates can be sent.
+          if (wc->wr_id == NCCL_IB_SPEED_UPDATE_WR_ID) {
+            struct ncclIbRecvComm* rComm = (struct ncclIbRecvComm*)r->base;
+            rComm->postedSpeedUpdate = false;
+            continue;
+          }
           if (r->base->resiliency == NULL) {
             WARN("NET/IB: Got CQE with error (devIndex=%d, req=%p, comm=%p (%s), wr_id=%lu, qp_num=%d)", i, r, r->base,
                  r->base->isSend ? "send" : "recv", wc->wr_id, wc->qp_num);

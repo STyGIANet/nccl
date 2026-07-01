@@ -899,8 +899,6 @@ ib_recv_dev_list:
     }
   }
 
-  ncclIbComputeDevSpeeds(&comm->base);
-
   memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.vProps.ndevs;
 
@@ -982,6 +980,12 @@ ib_recv_dev_list:
       return ncclInternalError;
     }
   }
+
+  if (ncclParamIbEventBasedLb() && ncclParamIbEventBasedLbRemote()) {
+    NCCLCHECKGOTO(wrap_ibv_reg_mr(&comm->remoteSpeedMr, comm->devs[0].base.pd, &comm->remoteSpeedBuf,
+                                  sizeof(comm->remoteSpeedBuf), IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE),
+                  ret, fail);
+  }
   trafficClass = ncclIbGetTrafficClass(ctx);
   meta.addr = (uint64_t)comm->ctsFifo;
   meta.sl = (ncclParamIbSl() != -1)                        ? ncclParamIbSl() :
@@ -990,6 +994,8 @@ ib_recv_dev_list:
   meta.tc = (envTrafficClass != -1)                        ? envTrafficClass :
             (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? trafficClass :
                                                              NCCL_IB_TC_DEFAULT;
+  meta.remSpeedBufAddr = comm->remoteSpeedMr ? (uint64_t)&comm->remoteSpeedBuf : 0;
+  meta.remSpeedBufRkey = comm->remoteSpeedMr ? comm->remoteSpeedMr->rkey : 0;
   strncpy(meta.devName, mergedDev->devName, MAX_MERGED_DEV_NAME);
 
   stage->state = ncclIbCommStateSend;
@@ -1033,8 +1039,6 @@ ib_connect:
 
   // Store the number of remote devices
   comm->base.nRemDevs = remMeta.ndevs;
-  // Compute weights
-  ncclIbComputeLbWeights(&comm->base);
 
   // Store the remote GID information per-device provided by the remote peer
   for (int i = 0; i < comm->base.nRemDevs; i++) {
@@ -1064,6 +1068,8 @@ ib_connect:
   }
 
   NCCLCHECKGOTO(ncclIbSenderQpsToRts(comm, &remMeta), ret, fail);
+  ncclIbComputeDevSpeeds(&comm->base);
+  ncclIbComputeLbWeights(&comm->base);
 
   comm->base.ready = 1;
   stage->state = ncclIbCommStateConnected;
@@ -1152,9 +1158,11 @@ static ncclResult_t ncclIbReceiverQpsCreateToRts(ncclIbRecvComm* rComm, struct n
   // CTS messages are posted using send work requests.
   // Note that because only specific CTS messages are signaled, the send queue
   // size needs to be double the number of max requests.
-  // When resiliency is enabled, the number of send work requests is as the
+  // When resiliency is enabled, the number of send work requests is same as the
   // number of max requests because every CTS message is signaled.
-  qpCreateAttrs.maxSendWorkRequest = NET_IB_MAX_REQUESTS * (rComm->base.resiliency ? 1 : 2);
+  // +1 reserves space for one in-flight speed update RDMA write on qps[0].
+  qpCreateAttrs.maxSendWorkRequest = NET_IB_MAX_REQUESTS * (rComm->base.resiliency ? 1 : 2) +
+                                     ((ncclParamIbEventBasedLb() && ncclParamIbEventBasedLbRemote()) ? 1 : 0);
   for (int qpIndex = 0; qpIndex < nqps; qpIndex++) {
     // The QPs are created in a "striped" manner across the available devices.
     // For example, if there are 2 devices and 4 QPs, the QPs will be created
@@ -1509,8 +1517,10 @@ ib_recv:
   // Receiver's CQ size needs to accomodate receive requests that can generate
   // up to 2 completions (one for the CTS message and one for the completion
   // of a receive request) per QP, in the worst case.
+  // +1 reserves space for one in-flight speed update RDMA write completion.
   int cqSize;
-  cqSize = 2 * NET_IB_MAX_REQUESTS * nQpsPerDev;
+  cqSize =
+    2 * NET_IB_MAX_REQUESTS * nQpsPerDev + ((ncclParamIbEventBasedLb() && ncclParamIbEventBasedLbRemote()) ? 1 : 0);
   for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
     rCommDev = rComm->devs + i;
     ibDevN = rComm->base.vProps.devs[i];
@@ -1554,12 +1564,15 @@ ib_recv:
 
   // Store the number of remote devices provided by the remote peer
   rComm->base.nRemDevs = remMeta.ndevs;
+  // Store the sender's speed buffer address and rkey for RDMA speed updates
+  rComm->remSpeedBufAddr = remMeta.remSpeedBufAddr;
 
   // Store the remote GID information per-device provided by the remote peer
   for (int i = 0; i < rComm->base.nRemDevs; i++) {
     rComm->base.remDevs[i] = remMeta.devs[i];
     rComm->base.remDevs[i].remoteGid.global.interface_id = rComm->base.remDevs[i].gid.global.interface_id;
     rComm->base.remDevs[i].remoteGid.global.subnet_prefix = rComm->base.remDevs[i].gid.global.subnet_prefix;
+    rComm->base.remDevs[i].remSpeedBufRkey = remMeta.remSpeedBufRkey;
   }
 
   // Determine if Flush is enabled for this Comm. Must be done before creating
@@ -1595,6 +1608,13 @@ ib_recv:
                                   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ),
                   ret, fail);
     meta.devs[i].rkey = rCommDev->cmplsRecordsMr->rkey;
+
+    // Register speed update buffer
+    if (ncclParamIbEventBasedLb() && ncclParamIbEventBasedLbRemote()) {
+      NCCLCHECKGOTO(wrap_ibv_reg_mr(&rCommDev->speedUpdateMr, rCommDev->base.pd, &rComm->speedUpdateBuf,
+                                    sizeof(rComm->speedUpdateBuf), IBV_ACCESS_LOCAL_WRITE),
+                    ret, fail);
+    }
   }
   if (ncclParamIbUseInline()) rComm->remCtsFifo.flags = IBV_SEND_INLINE;
 
@@ -1609,6 +1629,9 @@ ib_recv:
     meta.devs[i].gid.global.subnet_prefix = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
     meta.devs[i].gid.global.interface_id = rCommDev->base.gidInfo.localGid.global.interface_id;
     meta.devs[i].mtu = ibDev->portAttr.active_mtu;
+    meta.devs[i].currSpeed =
+      COMPILER_ATOMIC_LOAD(&ncclIbDevs[rCommDev->base.ibDevN].currSpeed, std::memory_order_relaxed);
+    rComm->lastSentSpeeds[i] = (uint16_t)(meta.devs[i].currSpeed / 1000);
   }
   meta.addr = (uint64_t)rComm->cmplsRecords;
   meta.sl = remMeta.sl;
@@ -1670,6 +1693,10 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
       NCCLCHECK(ncclIbResiliencyClose(comm->base.resiliency));
     }
 
+    if (comm->remoteSpeedMr) {
+      NCCLCHECK(wrap_ibv_dereg_mr(comm->remoteSpeedMr));
+    }
+
     for (int i = 0; i < comm->base.vProps.ndevs; i++) {
       struct ncclIbSendCommDev* commDev = comm->devs + i;
       if (commDev->ctsFifoMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->ctsFifoMr));
@@ -1710,6 +1737,7 @@ ncclResult_t ncclIbCloseRecv(void* recvComm) {
       }
       if (commDev->ctsFifoMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->ctsFifoMr));
       if (commDev->cmplsRecordsMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->cmplsRecordsMr));
+      if (commDev->speedUpdateMr != NULL) NCCLCHECK(wrap_ibv_dereg_mr(commDev->speedUpdateMr));
       if (comm->base.resiliency) {
         ncclIbResiliencyDevDestroy(comm->base.resiliency, i);
       }
