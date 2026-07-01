@@ -42,12 +42,12 @@ ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
   return ncclSuccess;
 }
 
-ncclRasDiagMode ncclRasDiagGetMode(const struct ncclComm* comm) {
+ncclResult_t ncclRunDiagnosticsActive(struct ncclComm* comm) {
   (void)comm;
-  return NCCL_RAS_DIAG_OFF;
+  return ncclSuccess;
 }
 
-ncclResult_t ncclRasPassiveDiagTrigger(struct ncclComm* comm) {
+ncclResult_t ncclRunDiagnosticsPassive(struct ncclComm* comm) {
   (void)comm;
   return ncclSuccess;
 }
@@ -271,6 +271,14 @@ int64_t ncclParamIbDataDirect(void) {
 }
 
 int64_t ncclParamGinEnable(void) {
+  return 0;
+}
+
+int64_t ncclParamRasDiagnostics() {
+  return 0;
+}
+
+int64_t ncclParamDiagnostics() {
   return 0;
 }
 

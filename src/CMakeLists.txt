@@ -85,6 +85,7 @@ list(APPEND LIBSRCFILES
 # Add GIN sources only on Linux
 if(NCCL_OS_LINUX)
     list(APPEND LIBSRCFILES ${GIN_SOURCES})
+    list(APPEND LIBSRCFILES diagnostics.cc)
 endif()
 
 ###################### Create a shared NCCL library ############################

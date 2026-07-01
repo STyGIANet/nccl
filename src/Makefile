@@ -48,7 +48,7 @@ BINSRCFILES := ras/client.cc
 PARAMBINSRCFILES := param/ncclparam.cc
 
 ifeq ($(NCCL_OS_LINUX), 1)
-	LIBSRCFILES += os/linux.cc os/linux_ipcsocket.cc os/linux_socket_pair.cc
+	LIBSRCFILES += os/linux.cc os/linux_ipcsocket.cc os/linux_socket_pair.cc diagnostics.cc
 else ifeq ($(NCCL_OS_WINDOWS), 1)
 	LIBSRCFILES += os/windows.cc os/windows_ipcsocket.cc os/windows_socket_pair.cc
 endif

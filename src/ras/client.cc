@@ -51,7 +51,7 @@ static void printUsage(const char* argv0) {
           "Usage: %s [OPTION]...\n"
           "Query the state of a running NCCL job.\n"
           "\nOptions:\n"
-          "  -D, --diagnostics   Run NCCL diagnostics via RAS (NCCL_DIAGNOSTICS=passive)\n"
+          "  -D, --diagnostics   Run NCCL RAS diagnostics\n"
           "  -f, --format=FMT    Output format: text or json (text by default)\n"
           "  -h, --host=HOST     Host name or IP address of the RAS client socket of the\n"
           "                      NCCL job to connect to (localhost by default)\n"

@@ -57,18 +57,6 @@ static std::thread rasThread;
 static std::mutex rasNotificationMutex;
 static ncclSocketPairDescriptor rasNotificationPipe[2] = {NCCL_SOCKET_PAIR_INVALID, NCCL_SOCKET_PAIR_INVALID};
 
-// clang-format off
-DEFINE_NCCL_PARAM(ncclParamDiagnostics, ncclRasDiagMode, NCCL_DIAGNOSTICS, NCCL_RAS_DIAG_OFF,
-                  NCCL_PARAM_FLAG_PUBLISHED | NCCL_PARAM_FLAG_CACHED,
-                  ncclParamOneOf<ncclRasDiagMode>(makeOptions(
-                    makeOption("off", NCCL_RAS_DIAG_OFF, "Disable diagnostics"),
-                    makeOption("0", NCCL_RAS_DIAG_OFF, "Disable diagnostics"),
-                    makeOption("passive", NCCL_RAS_DIAG_PASSIVE, "Run passive diagnostics"),
-                    makeOption("1", NCCL_RAS_DIAG_PASSIVE, "Alias for passive"),
-                    makeOption("active", NCCL_RAS_DIAG_ACTIVE, "Run active diagnostics")
-                  )), "Enable NCCL diagnostics");
-// clang-format on
-
 // Data for the main poll() in the RAS thread.
 struct pollfd* rasPfds;
 static int nRasPfds;
@@ -94,6 +82,9 @@ static ncclResult_t rasNetSendNack(struct rasSocket* sock);
 static void* rasThreadMain(void*);
 
 static void rasTerminate();
+
+// enable to run passive RAS diagnostics
+NCCL_PARAM(RasDiagnostics, "RUN_RAS_DIAGNOSTICS", 0);
 
 //////////////////////////////////////////////////
 // Functions invoked from regular NCCL threads. //
@@ -197,36 +188,8 @@ ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
   return ncclSuccess;
 }
 
-// Returns whether this parent communicator should start the one-shot init diagnostics gather.
-static bool ncclRasDiagShouldTrigger(const struct ncclComm* comm) {
-  if (comm == nullptr || comm->sharedRes == nullptr || comm->sharedRes->owner != comm) return false;
-  if (!rasInitialized) return false;
-
-  std::lock_guard<std::mutex> lock(ncclCommsMutex);
-  if (ncclComms == nullptr) return false;
-  for (int i = 0; i < nNcclComms; i++) {
-    struct ncclComm* other = ncclComms[i];
-    if (other == nullptr || other == comm || other->cudaDev != comm->cudaDev) continue;
-    if (other->finalizeCalled || other->destroyFlag) continue;
-    if (other->abortFlag != nullptr && COMPILER_ATOMIC_LOAD(other->abortFlag, std::memory_order_acquire) != 0) {
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
-// Returns the diagnostics mode this rank can participate in for init diagnostics.
-ncclRasDiagMode ncclRasDiagGetMode(const struct ncclComm* comm) {
-#if defined(NCCL_OS_LINUX)
-  ncclRasDiagMode diagMode = ncclParamDiagnostics();
-  if (diagMode != NCCL_RAS_DIAG_OFF && ncclRasDiagShouldTrigger(comm)) return diagMode;
-#endif
-  return NCCL_RAS_DIAG_OFF;
-}
-
 // Requests the RAS thread to run passive diagnostics for this communicator.
-ncclResult_t ncclRasPassiveDiagTrigger(struct ncclComm* comm) {
+ncclResult_t ncclRunDiagnosticsPassive(struct ncclComm* comm) {
   struct rasNotification msg;
   ncclResult_t ret = ncclSuccess;
 
