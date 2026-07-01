@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# This code was automatically generated with version 0.0.1. Do not modify it directly.
+# This code was automatically generated with version 0.1.0. Do not modify it directly.
 
 from libc.stdint cimport intptr_t, uint64_t, uintptr_t
 
@@ -117,11 +117,11 @@ cdef void* __ncclEpTensorAlloc = NULL
 cdef void* __ncclEpTensorDestroy = NULL
 cdef void* __ncclEpCreateGroup = NULL
 cdef void* __ncclEpGroupDestroy = NULL
-cdef void* __ncclEpCreateHandle = NULL
-cdef void* __ncclEpHandleDestroy = NULL
 cdef void* __ncclEpHandleMemSize = NULL
 cdef void* __ncclEpInitHandle = NULL
 cdef void* __ncclEpUpdateHandle = NULL
+cdef void* __ncclEpCreateHandle = NULL
+cdef void* __ncclEpHandleDestroy = NULL
 cdef void* __ncclEpDispatch = NULL
 cdef void* __ncclEpCombine = NULL
 cdef void* __ncclEpComplete = NULL
@@ -192,20 +192,6 @@ cdef int _check_or_init_nccl_ep() except -1 nogil:
                 handle = load_library()
             __ncclEpGroupDestroy = dlsym(handle, 'ncclEpGroupDestroy')
 
-        global __ncclEpCreateHandle
-        __ncclEpCreateHandle = dlsym(RTLD_DEFAULT, 'ncclEpCreateHandle')
-        if __ncclEpCreateHandle == NULL:
-            if handle == NULL:
-                handle = load_library()
-            __ncclEpCreateHandle = dlsym(handle, 'ncclEpCreateHandle')
-
-        global __ncclEpHandleDestroy
-        __ncclEpHandleDestroy = dlsym(RTLD_DEFAULT, 'ncclEpHandleDestroy')
-        if __ncclEpHandleDestroy == NULL:
-            if handle == NULL:
-                handle = load_library()
-            __ncclEpHandleDestroy = dlsym(handle, 'ncclEpHandleDestroy')
-
         global __ncclEpHandleMemSize
         __ncclEpHandleMemSize = dlsym(RTLD_DEFAULT, 'ncclEpHandleMemSize')
         if __ncclEpHandleMemSize == NULL:
@@ -226,6 +212,20 @@ cdef int _check_or_init_nccl_ep() except -1 nogil:
             if handle == NULL:
                 handle = load_library()
             __ncclEpUpdateHandle = dlsym(handle, 'ncclEpUpdateHandle')
+
+        global __ncclEpCreateHandle
+        __ncclEpCreateHandle = dlsym(RTLD_DEFAULT, 'ncclEpCreateHandle')
+        if __ncclEpCreateHandle == NULL:
+            if handle == NULL:
+                handle = load_library()
+            __ncclEpCreateHandle = dlsym(handle, 'ncclEpCreateHandle')
+
+        global __ncclEpHandleDestroy
+        __ncclEpHandleDestroy = dlsym(RTLD_DEFAULT, 'ncclEpHandleDestroy')
+        if __ncclEpHandleDestroy == NULL:
+            if handle == NULL:
+                handle = load_library()
+            __ncclEpHandleDestroy = dlsym(handle, 'ncclEpHandleDestroy')
 
         global __ncclEpDispatch
         __ncclEpDispatch = dlsym(RTLD_DEFAULT, 'ncclEpDispatch')
@@ -277,12 +277,6 @@ cpdef dict _inspect_function_pointers():
     global __ncclEpGroupDestroy
     data["__ncclEpGroupDestroy"] = <intptr_t>__ncclEpGroupDestroy
 
-    global __ncclEpCreateHandle
-    data["__ncclEpCreateHandle"] = <intptr_t>__ncclEpCreateHandle
-
-    global __ncclEpHandleDestroy
-    data["__ncclEpHandleDestroy"] = <intptr_t>__ncclEpHandleDestroy
-
     global __ncclEpHandleMemSize
     data["__ncclEpHandleMemSize"] = <intptr_t>__ncclEpHandleMemSize
 
@@ -291,6 +285,12 @@ cpdef dict _inspect_function_pointers():
 
     global __ncclEpUpdateHandle
     data["__ncclEpUpdateHandle"] = <intptr_t>__ncclEpUpdateHandle
+
+    global __ncclEpCreateHandle
+    data["__ncclEpCreateHandle"] = <intptr_t>__ncclEpCreateHandle
+
+    global __ncclEpHandleDestroy
+    data["__ncclEpHandleDestroy"] = <intptr_t>__ncclEpHandleDestroy
 
     global __ncclEpDispatch
     data["__ncclEpDispatch"] = <intptr_t>__ncclEpDispatch
@@ -393,26 +393,6 @@ cdef ncclResult_t _ncclEpGroupDestroy(ncclEpGroup_t ep_group) except?_NCCLRESULT
         ep_group)
 
 
-cdef ncclResult_t _ncclEpCreateHandle(ncclEpHandle_t* handle, ncclEpGroup_t ep_group, ncclEpLayout_t layout, const ncclEpTensor_t* topk_idx, const ncclEpLayoutInfo_t* layout_info, const ncclEpHandleConfig_t* config, cudaStream_t stream) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:
-    global __ncclEpCreateHandle
-    _check_or_init_nccl_ep()
-    if __ncclEpCreateHandle == NULL:
-        with gil:
-            raise FunctionNotFoundError("function ncclEpCreateHandle is not found")
-    return (<ncclResult_t (*)(ncclEpHandle_t*, ncclEpGroup_t, ncclEpLayout_t, const ncclEpTensor_t*, const ncclEpLayoutInfo_t*, const ncclEpHandleConfig_t*, cudaStream_t) noexcept nogil>__ncclEpCreateHandle)(
-        handle, ep_group, layout, topk_idx, layout_info, config, stream)
-
-
-cdef ncclResult_t _ncclEpHandleDestroy(ncclEpHandle_t handle) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:
-    global __ncclEpHandleDestroy
-    _check_or_init_nccl_ep()
-    if __ncclEpHandleDestroy == NULL:
-        with gil:
-            raise FunctionNotFoundError("function ncclEpHandleDestroy is not found")
-    return (<ncclResult_t (*)(ncclEpHandle_t) noexcept nogil>__ncclEpHandleDestroy)(
-        handle)
-
-
 cdef ncclResult_t _ncclEpHandleMemSize(ncclEpGroup_t ep_group, ncclEpLayout_t layout, const ncclEpHandleConfig_t* config, size_t* size_out, int num_topk) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:
     global __ncclEpHandleMemSize
     _check_or_init_nccl_ep()
@@ -441,6 +421,26 @@ cdef ncclResult_t _ncclEpUpdateHandle(ncclEpHandle_t handle, const ncclEpTensor_
             raise FunctionNotFoundError("function ncclEpUpdateHandle is not found")
     return (<ncclResult_t (*)(ncclEpHandle_t, const ncclEpTensor_t*, const ncclEpLayoutInfo_t*, cudaStream_t) noexcept nogil>__ncclEpUpdateHandle)(
         handle, topk_idx, layout_info, stream)
+
+
+cdef ncclResult_t _ncclEpCreateHandle(ncclEpHandle_t* handle, ncclEpGroup_t ep_group, ncclEpLayout_t layout, const ncclEpTensor_t* topk_idx, const ncclEpLayoutInfo_t* layout_info, const ncclEpHandleConfig_t* config, cudaStream_t stream) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:
+    global __ncclEpCreateHandle
+    _check_or_init_nccl_ep()
+    if __ncclEpCreateHandle == NULL:
+        with gil:
+            raise FunctionNotFoundError("function ncclEpCreateHandle is not found")
+    return (<ncclResult_t (*)(ncclEpHandle_t*, ncclEpGroup_t, ncclEpLayout_t, const ncclEpTensor_t*, const ncclEpLayoutInfo_t*, const ncclEpHandleConfig_t*, cudaStream_t) noexcept nogil>__ncclEpCreateHandle)(
+        handle, ep_group, layout, topk_idx, layout_info, config, stream)
+
+
+cdef ncclResult_t _ncclEpHandleDestroy(ncclEpHandle_t handle) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:
+    global __ncclEpHandleDestroy
+    _check_or_init_nccl_ep()
+    if __ncclEpHandleDestroy == NULL:
+        with gil:
+            raise FunctionNotFoundError("function ncclEpHandleDestroy is not found")
+    return (<ncclResult_t (*)(ncclEpHandle_t) noexcept nogil>__ncclEpHandleDestroy)(
+        handle)
 
 
 cdef ncclResult_t _ncclEpDispatch(ncclEpHandle_t handle, const ncclEpDispatchInputs_t* inputs, const ncclEpDispatchOutputs_t* outputs, const ncclEpLayoutInfo_t* layout_info, const ncclEpDispatchConfig_t* config, cudaStream_t stream) except?_NCCLRESULT_T_INTERNAL_LOADING_ERROR nogil:

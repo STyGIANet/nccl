@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# This code was automatically generated with version 0.0.1. Do not modify it directly.
+# This code was automatically generated with version 0.1.0. Do not modify it directly.
 
 cimport cython  # NOQA
 from libc.stdint cimport uint64_t
@@ -2542,20 +2542,6 @@ cpdef group_destroy(intptr_t ep_group):
     check_status(__status__)
 
 
-cpdef intptr_t create_handle(intptr_t ep_group, int layout, intptr_t topk_idx, intptr_t layout_info, intptr_t config, intptr_t stream) except? 0:
-    cdef Handle handle
-    with nogil:
-        __status__ = ncclEpCreateHandle(&handle, <Group>ep_group, <_Layout>layout, <const ncclEpTensor_t*>topk_idx, <const ncclEpLayoutInfo_t*>layout_info, <const ncclEpHandleConfig_t*>config, <Stream>stream)
-    check_status(__status__)
-    return <intptr_t>handle
-
-
-cpdef handle_destroy(intptr_t handle):
-    with nogil:
-        __status__ = ncclEpHandleDestroy(<Handle>handle)
-    check_status(__status__)
-
-
 cpdef size_t handle_mem_size(intptr_t ep_group, int layout, intptr_t config, int num_topk) except? -1:
     cdef size_t size_out
     with nogil:
@@ -2575,6 +2561,20 @@ cpdef intptr_t init_handle(intptr_t ep_group, int layout, intptr_t config, int n
 cpdef update_handle(intptr_t handle, intptr_t topk_idx, intptr_t layout_info, intptr_t stream):
     with nogil:
         __status__ = ncclEpUpdateHandle(<Handle>handle, <const ncclEpTensor_t*>topk_idx, <const ncclEpLayoutInfo_t*>layout_info, <Stream>stream)
+    check_status(__status__)
+
+
+cpdef intptr_t create_handle(intptr_t ep_group, int layout, intptr_t topk_idx, intptr_t layout_info, intptr_t config, intptr_t stream) except? 0:
+    cdef Handle handle
+    with nogil:
+        __status__ = ncclEpCreateHandle(&handle, <Group>ep_group, <_Layout>layout, <const ncclEpTensor_t*>topk_idx, <const ncclEpLayoutInfo_t*>layout_info, <const ncclEpHandleConfig_t*>config, <Stream>stream)
+    check_status(__status__)
+    return <intptr_t>handle
+
+
+cpdef handle_destroy(intptr_t handle):
+    with nogil:
+        __status__ = ncclEpHandleDestroy(<Handle>handle)
     check_status(__status__)
 
 
