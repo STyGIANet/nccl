@@ -60,7 +60,7 @@ class LibraryInfo:
     None if it could not be read from the library."""
 
     path: Path | None
-    """Path of the loaded ``libnccl.so``, or None if it cannot be determined."""
+    """Path of the loaded shared library, or None if it cannot be determined."""
 
     def __str__(self) -> str:
         out = str(self.version)
@@ -78,6 +78,12 @@ class VersionInfo:
     nccl4py: _Version
     """nccl4py package version."""
 
+    nccl_bindings: _Version
+    """NCCL header version the ``nccl`` bindings were generated from."""
+
+    nccl_ep_bindings: _Version
+    """NCCL EP header version the ``nccl_ep`` bindings were generated from."""
+
     nccl: LibraryInfo | None
     """Version/CUDA-variant/path of the ``libnccl.so`` nccl4py is using, or
     None when it cannot be loaded."""
@@ -91,9 +97,12 @@ def get_version() -> VersionInfo:
     """Return a structured snapshot of NCCL stack versions.
 
     Returns:
-        :py:class:`VersionInfo` with nccl4py + libnccl + libnccl_ep versions,
-        CUDA build variants, and loaded ``.so`` paths.
+        :py:class:`VersionInfo` with the nccl4py version, the header versions
+        the ``nccl`` / ``nccl_ep`` bindings were generated from, and the loaded
+        ``libnccl.so`` / ``libnccl_ep.so`` (version, CUDA build variant, path).
     """
+    from nccl.bindings import nccl as _nccl_binding, nccl_ep as _ep_binding
+
     nccl = None
     try:
         from nccl import core as _core
@@ -114,22 +123,36 @@ def get_version() -> VersionInfo:
     except (ImportError, RuntimeError):
         pass
 
-    return VersionInfo(nccl4py=_Version(__version__), nccl=nccl, nccl_ep=nccl_ep)
+    return VersionInfo(
+        nccl4py=_Version(__version__),
+        nccl_bindings=_Version(_nccl_binding.__version__),
+        nccl_ep_bindings=_Version(_ep_binding.__version__),
+        nccl=nccl,
+        nccl_ep=nccl_ep,
+    )
 
 
 def show_versions() -> None:
     """Print a summary of the installed NCCL stack to stdout.
 
-    For each component, reports the release version, the CUDA toolkit it was
-    built with, and (for native libraries) the path of the loaded ``.so``.
+    Reports the nccl4py version, the header versions the ``nccl`` / ``nccl_ep``
+    bindings were generated from, and each loaded native library's release
+    version, CUDA build variant, and ``.so`` path.
     """
     v = get_version()
-    nccl = str(v.nccl) if v.nccl is not None else "not available"
-    ep = str(v.nccl_ep) if v.nccl_ep is not None else "not available"
-    label_width = 12
+
+    def _fmt(value) -> str:
+        return str(value) if value is not None else "not available"
+
     print()
     print("NCCL versions")
     print("-------------")
-    print(f"{'nccl4py':<{label_width}}: {v.nccl4py}")
-    print(f"{'libnccl':<{label_width}}: {nccl}")
-    print(f"{'libnccl_ep':<{label_width}}: {ep}")
+    print(f"nccl4py     : {v.nccl4py}")
+    print()
+    print("bindings (generated from headers)")
+    print(f"  nccl      : {v.nccl_bindings}")
+    print(f"  nccl_ep   : {v.nccl_ep_bindings}")
+    print()
+    print("loaded libraries")
+    print(f"  nccl      : {_fmt(v.nccl)}")
+    print(f"  nccl_ep   : {_fmt(v.nccl_ep)}")

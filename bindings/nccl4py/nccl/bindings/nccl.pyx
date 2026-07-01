@@ -12,6 +12,9 @@ from ._internal.utils cimport (nested_resource, nullable_unique_ptr, get_buffer_
 
 from enum import IntEnum as _IntEnum
 
+_version_span = "with version 2.30.7"
+__version__ = _version_span.split(", generator version")[0].split()[-1]
+
 
 from libc.stdlib cimport calloc, free, malloc
 from cython cimport view
