@@ -283,7 +283,6 @@ ncclResult_t ncclGinIbGdakiCreateContext(void* collComm, ncclGinConfig_t* config
   if (ncclParamGinIbTc() != -1) config->trafficClass = ncclParamGinIbTc();
   else if (ncclParamIbTc() != -1) config->trafficClass = ncclParamIbTc();
 
-  // GDAKI currently doesn't support the rankStride optimization.
   NCCLCHECK(ncclGinGdakiCreateContext(cComm, config, ginCtx, devHandle));
 
   return ncclSuccess;
