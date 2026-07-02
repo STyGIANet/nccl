@@ -2700,9 +2700,10 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     return ncclInvalidUsage;
   }
 
-  // Check if context is valid (must be 0 for now)
-  if (info->ctx != 0) {
-    WARN("Context %d is invalid (must be 0)", info->ctx);
+  // Check if context is valid: 0 <= ctx < numRmaCtx.
+  // (For WaitSignal the per-descriptor ctx is validated below; info->ctx is 0 there.)
+  if (info->ctx < 0 || info->ctx >= comm->config.numRmaCtx) {
+    WARN("Context %d is invalid (must be in [0, %d))", info->ctx, comm->config.numRmaCtx);
     return ncclInvalidArgument;
   }
 
@@ -2780,8 +2781,9 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
              comm->config.numRmaSig);
         return ncclInvalidArgument;
       }
-      if (info->signalDescs[i].ctx != 0) {
-        WARN("ncclWaitSignal: descriptor %d has invalid context %d (must be 0)", i, info->signalDescs[i].ctx);
+      if (info->signalDescs[i].ctx < 0 || info->signalDescs[i].ctx >= comm->config.numRmaCtx) {
+        WARN("ncclWaitSignal: descriptor %d has invalid context %d (must be in [0, %d))", i, info->signalDescs[i].ctx,
+             comm->config.numRmaCtx);
         return ncclInvalidArgument;
       }
     }
@@ -2802,36 +2804,52 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
 
   // Handle WaitSignal separately
   if (info->coll == ncclFuncWaitSignal) {
-    struct ncclTaskRma* t = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
+    // A single ncclWaitSignal may span multiple contexts (ctx is per-descriptor).
+    // Group descriptors by ctx and emit one task per distinct ctx, filed into that
+    // ctx's queue. numRmaCtx is small, so a numRmaCtx x nDesc scan is fine; every
+    // descriptor ctx is already validated to be in [0, numRmaCtx) above.
+    for (int c = 0; c < comm->config.numRmaCtx; c++) {
+      // Count descriptors targeting context c.
+      int nForCtx = 0;
+      for (int i = 0; i < info->nDesc; i++) {
+        if (info->signalDescs[i].ctx == c) nForCtx++;
+      }
+      if (nForCtx == 0) continue;
 
-    t->func = ncclFuncWaitSignal;
-    t->ctx = 0;
-    t->count = 0;
-    t->bytes = 0;
-    t->srcBuff = NULL;
-    t->srcWinOffset = 0;
-    t->srcWinHost = NULL;
-    t->peer = 0;
-    t->peerWinOffset = 0;
-    t->peerWinHost = NULL;
-    t->signalMode = NCCL_SIGNAL;
-    t->signalIdx = 0;
+      struct ncclTaskRma* t = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
 
-    // Convert descriptors to peers and nsignals arrays
-    t->npeers = info->nDesc;
-    t->peers = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
-    t->nsignals = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
-    t->signalIdxs = ncclMemoryStackAlloc<int>(&comm->memScoped, info->nDesc);
+      t->func = ncclFuncWaitSignal;
+      t->ctx = c;
+      t->count = 0;
+      t->bytes = 0;
+      t->srcBuff = NULL;
+      t->srcWinOffset = 0;
+      t->srcWinHost = NULL;
+      t->peer = 0;
+      t->peerWinOffset = 0;
+      t->peerWinHost = NULL;
+      t->signalMode = NCCL_SIGNAL;
+      t->signalIdx = 0;
 
-    for (int i = 0; i < info->nDesc; i++) {
-      t->peers[i] = info->signalDescs[i].peer;
-      t->nsignals[i] = info->signalDescs[i].opCnt;
-      t->signalIdxs[i] = info->signalDescs[i].sigIdx;
+      // Convert the descriptors targeting ctx c into peers, nsignals and signalIdxs arrays.
+      t->npeers = nForCtx;
+      t->peers = ncclMemoryStackAlloc<int>(&comm->memScoped, nForCtx);
+      t->nsignals = ncclMemoryStackAlloc<int>(&comm->memScoped, nForCtx);
+      t->signalIdxs = ncclMemoryStackAlloc<int>(&comm->memScoped, nForCtx);
+
+      int k = 0;
+      for (int i = 0; i < info->nDesc; i++) {
+        if (info->signalDescs[i].ctx != c) continue;
+        t->peers[k] = info->signalDescs[i].peer;
+        t->nsignals[k] = info->signalDescs[i].opCnt;
+        t->signalIdxs[k] = info->signalDescs[i].sigIdx;
+        k++;
+      }
+
+      t->eActivationMask = COMPILER_ATOMIC_LOAD(&ncclProfilerEventMask, std::memory_order_relaxed);
+      planner->nTasksRma++;
+      ncclIntruQueueEnqueue(&planner->rmaTaskQueues[t->ctx], t);
     }
-
-    t->eActivationMask = COMPILER_ATOMIC_LOAD(&ncclProfilerEventMask, std::memory_order_relaxed);
-    planner->nTasksRma++;
-    ncclIntruQueueEnqueue(&planner->rmaTaskQueues[t->ctx], t);
 
   } else if (info->coll == ncclFuncPutSignal || info->coll == ncclFuncSignal) {
     // Calculate total bytes for the operation

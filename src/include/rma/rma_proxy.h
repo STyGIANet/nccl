@@ -111,6 +111,8 @@ struct ncclRmaProxyCtx {
   void* rmaCtx;
   // ncclNetDeviceHandle_t *devHandle;
   ncclNetProperties_t props;
+  // Index into rmaComms / rmaHostWins used for this context's data-window handles.
+  int collCommIdx;
 
   //---------Non-graph descriptor queues and synchronization---------
 
@@ -201,7 +203,7 @@ ncclResult_t ncclRmaProxyFinalize(struct ncclComm* comm);
 
 // RMA Proxy context management
 ncclResult_t ncclRmaProxyCreateContext(struct ncclComm* comm, void* collComm, ncclNetProperties_t props,
-                                       void** outRmaProxyCtx, ncclNetDeviceHandle_t** outDevHandle);
+                                       int collCommIdx, void** outRmaProxyCtx);
 ncclResult_t ncclRmaProxyDestroyContext(ncclRma_t* rmaComm, void* rmaProxyCtx);
 ncclResult_t ncclRmaProxyProgress(ncclRma_t* ncclRma, void* rmaProxyCtx);
 void* ncclRmaProxyProgressThread(struct ncclRmaProxyState* rmaProxyState_);

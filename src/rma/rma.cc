@@ -115,22 +115,6 @@ static inline bool isRmaPutOrSignal(ncclFunc_t func) {
   return (func == ncclFuncPutSignal || func == ncclFuncSignal);
 }
 
-// Check if two RMA tasks can be batched together
-static inline bool canBatchRmaTasks(struct ncclTaskRma* task1, struct ncclTaskRma* task2) {
-  // Check if the tasks are in the same context
-  if (task1->ctx != task2->ctx) return false;
-
-  // Check if the tasks are the same function
-  if (task1->func == task2->func) return true;
-
-  // Put/Signal tasks can be batched together
-  if (isRmaPutOrSignal(task1->func) && isRmaPutOrSignal(task2->func)) {
-    return true;
-  }
-
-  return false;
-}
-
 // Schedule comm->planner RMA tasks to the plan and split the RMA tasks into CE and Proxy tasks
 // Then seek opportunities to batch tasks, batching checked for consecutive operations targeting the same context
 // - ncclFuncWaitSignal does not perform further batching as the API can already batch waitSignal from multiple peers
@@ -162,7 +146,6 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
   // Initialize plan
   plan->isRma = true;
   plan->rmaArgs = ncclMemoryStackAlloc<struct ncclRmaArgs>(&comm->memScoped);
-  plan->rmaArgs->ctx = ctx;
   plan->rmaArgs->func = firstTask->func;
   plan->rmaArgs->nRmaTasks = 0;
   plan->rmaArgs->nRmaTasksProxy = 0;
@@ -265,28 +248,31 @@ ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan
 
     planner->nTasksRma -= 1;
 
-    // Batch consecutive tasks from the same context that match operation category
-    while (!ncclIntruQueueEmpty(ctxQueue)) {
-      struct ncclTaskRma* task = ncclIntruQueueHead(ctxQueue);
-
-      // Check if this task can be batched with the first task
-      if (!canBatchRmaTasks(firstTask, task)) {
-        break;
+    // Pull put/signal tasks from every context into this single plan so one launch
+    // covers all contexts: the proxy fires all async starts before any blocking done,
+    // and the CE path batches all contexts' copies/signals into one launch (each launch
+    // selects the per-task context) rather than one plan per context. Each context's
+    // queue is drained in order, only up to its first WaitSignal task, so per-context
+    // FIFO is preserved and WaitSignal stays one-context-per-plan. firstTask is a
+    // put/signal here, so a task is batchable exactly when it is also a put/signal.
+    // firstTask's own context (ctx) was partially consumed above; its residual run is
+    // drained naturally below.
+    for (int c = 0; c < comm->config.numRmaCtx; c++) {
+      struct ncclIntruQueue<struct ncclTaskRma, &ncclTaskRma::next>* q = &planner->rmaTaskQueues[c];
+      while (!ncclIntruQueueEmpty(q)) {
+        struct ncclTaskRma* task = ncclIntruQueueHead(q);
+        if (!isRmaPutOrSignal(task->func)) break;        // stop at WaitSignal
+        ncclIntruQueueDequeue(q);
+        if (isLsaAccessible(comm, task->peer)) {
+          ncclIntruQueueEnqueue(&plan->rmaTaskQueueCe, task);
+          plan->rmaArgs->nRmaTasksCe++;
+        } else {
+          ncclIntruQueueEnqueue(&plan->rmaTaskQueueProxy, task);
+          plan->rmaArgs->nRmaTasksProxy++;
+        }
+        plan->rmaArgs->nRmaTasks++;
+        planner->nTasksRma -= 1;
       }
-
-      bool lsaAccessible = isLsaAccessible(comm, task->peer);
-
-      // If the task can be batched, remove from context queue and add to plan
-      ncclIntruQueueDequeue(ctxQueue);
-      if (lsaAccessible) {
-        ncclIntruQueueEnqueue(&plan->rmaTaskQueueCe, task);
-        plan->rmaArgs->nRmaTasksCe++;
-      } else {
-        ncclIntruQueueEnqueue(&plan->rmaTaskQueueProxy, task);
-        plan->rmaArgs->nRmaTasksProxy++;
-      }
-      plan->rmaArgs->nRmaTasks++;
-      planner->nTasksRma -= 1;
     }
   }
 

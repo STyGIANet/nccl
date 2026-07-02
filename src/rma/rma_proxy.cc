@@ -197,7 +197,7 @@ static ncclResult_t ncclRmaProxyCtxAllocGraph(struct ncclComm* comm, ncclRma_t* 
 }
 
 ncclResult_t ncclRmaProxyCreateContext(struct ncclComm* comm, void* collComm, ncclNetProperties_t props,
-                                       void** outRmaProxyCtx) {
+                                       int collCommIdx, void** outRmaProxyCtx) {
   ncclResult_t ret = ncclSuccess;
   // Get the RMA plugin interface
   ncclRma_t* rmaComm = (ncclRma_t*)comm->rmaState.rmaProxyState.ncclRma;
@@ -211,6 +211,8 @@ ncclResult_t ncclRmaProxyCreateContext(struct ncclComm* comm, void* collComm, nc
   rmaProxyCtx->comm = comm;
   rmaProxyCtx->rmaCollComm = collComm;
   rmaProxyCtx->props = props;
+  // rmaComm (NIC) this context uses for its data-window MR handle lookups.
+  rmaProxyCtx->collCommIdx = collCommIdx;
   NCCLCHECKGOTO(rmaComm->createContext(collComm, &config, &rmaProxyCtx->rmaCtx), ret, fail);
 
   NCCLCHECKGOTO(ncclRmaProxyCtxAlloc(comm, rmaComm, rmaProxyCtx), ret, fail);
@@ -445,8 +447,9 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   NCCLCHECK(ncclCalloc(&rmaProxyState->rmaProxyCtxs, rmaProxyState->rmaProxyCtxCount));
   for (int n = 0; n < rmaProxyState->rmaProxyCtxCount; n++) {
     // Round-robin mapping to physical RMA communicator contexts
-    int rmaCommIdx = n % rmaProxyState->rmaCommCount;
-    NCCLCHECKGOTO(ncclRmaProxyCreateContext(comm, rmaProxyState->rmaComms[rmaCommIdx], rmaProxyState->props[rmaCommIdx],
+    int collCommIdx = n % rmaProxyState->rmaCommCount;
+    NCCLCHECKGOTO(ncclRmaProxyCreateContext(comm, rmaProxyState->rmaComms[collCommIdx],
+                                            rmaProxyState->props[collCommIdx], collCommIdx,
                                             &rmaProxyState->rmaProxyCtxs[n]),
                   ret, fail);
   }

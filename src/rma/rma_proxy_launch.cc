@@ -28,9 +28,11 @@ ncclResult_t ncclRmaProxyPutBuildOp(struct ncclComm* comm, struct ncclRmaProxyCt
                                     struct ncclDevrWindow* peerWin, size_t peerOff, size_t size, int peer,
                                     int signalIdx, ncclSignalMode_t signalMode, struct ncclRmaPutSignalOp* op) {
   op->srcOff = ncclDevrGetWinOffset(srcWin) + srcOff;
-  op->srcHandle = ncclDevrGetRmaWin(srcWin, ctx);
+  // Data-window MR handles are stored per rmaComm (rmaHostWins[0..rmaCommCount)), so
+  // index them by collCommIdx. The signal handle below uses rmaProxyCtx's own buffer.
+  op->srcHandle = ncclDevrGetRmaWin(srcWin, rmaProxyCtx->collCommIdx);
   op->dstOff = ncclDevrGetWinOffset(peerWin) + peerOff;
-  op->dstHandle = ncclDevrGetRmaWin(peerWin, ctx);
+  op->dstHandle = ncclDevrGetRmaWin(peerWin, rmaProxyCtx->collCommIdx);
   op->size = size;
   op->targetRank = peer;
   op->request = nullptr;
@@ -565,33 +567,32 @@ ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan*
   }
 
   bool persistent = plan->persistent;
-  int ctx = plan->rmaArgs->ctx;
   int nRmaTasksProxy = plan->rmaArgs->nRmaTasksProxy;
-  struct ncclRmaProxyCtx* rmaProxyCtx = (struct ncclRmaProxyCtx*)comm->rmaState.rmaProxyState.rmaProxyCtxs[ctx];
+  void** rmaProxyCtxs = comm->rmaState.rmaProxyState.rmaProxyCtxs;
 
   int startOps = ncclRmaProxyPutStartNumOps(persistent);
   int doneOps = ncclRmaProxyPutDoneNumOps(persistent);
   int opsPerTask = startOps + doneOps;
 
   struct ncclRmaProxyDesc** descs = nullptr;
+  struct ncclRmaProxyCtx** descCtxs = nullptr;  // per-desc context: tasks may span contexts
   CUstreamBatchMemOpParams* batchParams = nullptr;
   NCCLCHECK(ncclCalloc(&descs, nRmaTasksProxy));
+  NCCLCHECK(ncclCalloc(&descCtxs, nRmaTasksProxy));
   NCCLCHECK(ncclCalloc(&batchParams, opsPerTask * nRmaTasksProxy));
 
-  // Phase 1: build all descriptors and fill all stream-batch memop params
-  // up front. After this loop, every batchParams slot is populated and every
-  // descs[i] points to a fresh heap-allocated descriptor we still own.
+  // Phase 1: build all descriptors and fill all stream-batch memop params up front.
+  // Tasks in this plan may belong to different contexts; each desc is built on its
+  // own task's context, so the start memops below run before any blocking done memop.
   for (int i = 0; i < nRmaTasksProxy; i++) {
     struct ncclTaskRma* task = ncclIntruQueueDequeue(&plan->rmaTaskQueueProxy);
-    if (task->ctx != ctx) {
-      WARN("RMA proxy task context is %d, expected %d", task->ctx, ctx);
-      ret = ncclInternalError;
-      ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);
-      goto fail;
-    }
+    // A single plan batches put/signal tasks from multiple contexts; select each
+    // task's own context rather than asserting a single plan-wide context.
+    struct ncclRmaProxyCtx* taskCtx = (struct ncclRmaProxyCtx*)rmaProxyCtxs[task->ctx];
+    descCtxs[i] = taskCtx;
 
     NCCLCHECKGOTO(ncclCalloc(&descs[i], 1), ret, fail);
-    NCCLCHECKGOTO(ncclRmaProxyPutDescFromTask(comm, rmaProxyCtx, plan, task, descs[i]), ret, fail);
+    NCCLCHECKGOTO(ncclRmaProxyPutDescFromTask(comm, taskCtx, plan, task, descs[i]), ret, fail);
     NCCLCHECKGOTO(ncclRmaProxyPutStartParams(descs[i], &batchParams[i * startOps]), ret, fail);
     NCCLCHECKGOTO(ncclRmaProxyPutDoneParams(descs[i], &batchParams[nRmaTasksProxy * startOps + i * doneOps]), ret,
                   fail);
@@ -599,25 +600,26 @@ ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan*
     INFO(NCCL_COLL,
          "ncclRmaProxyPutLaunch enqueued Desc: rank=%d peer=%d ctx=%d size=%ld signalMode=%d readySeq=%lu doneSeq=%lu "
          "persistent=%d",
-         comm->rank, task->peer, ctx, task->count * ncclTypeSize(task->datatype), task->signalMode,
+         comm->rank, task->peer, task->ctx, task->count * ncclTypeSize(task->datatype), task->signalMode,
          (uint64_t)descs[i]->opSeq, (uint64_t)descs[i]->opSeq, persistent);
 
     ncclMemoryPoolFree(&comm->memPool_ncclTaskRma, task);
   }
 
-  // Phase 2: enqueue descriptors and flush their stream memops in chunks
-  // bounded by the per-peer circular buffer's capacity.
+  // Phase 2: enqueue descriptors and flush their stream memops in chunks bounded by
+  // each context's per-peer circular buffer capacity. Enqueue/full checks use each
+  // desc's own context; the memops all go on the single launch stream.
   {
     int count = 0;
     while (count < nRmaTasksProxy) {
       int i = count;
       for (; i < nRmaTasksProxy; i++) {
-        if (ncclRmaProxyEnqueueFull(rmaProxyCtx, descs[i])) {
+        if (ncclRmaProxyEnqueueFull(descCtxs[i], descs[i])) {
           break;
         }
         // EnqueueDesc transfers ownership to the proxy queue and nulls
         // descs[i] via its desc** parameter.
-        NCCLCHECKGOTO(ncclRmaProxyEnqueueDesc(rmaProxyCtx, &descs[i]), ret, fail);
+        NCCLCHECKGOTO(ncclRmaProxyEnqueueDesc(descCtxs[i], &descs[i]), ret, fail);
       }
 
       int pending = i - count;
@@ -646,6 +648,7 @@ ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan*
 
 exit:
   free(batchParams);
+  free(descCtxs);
   free(descs);
   return ret;
 fail:
@@ -666,11 +669,11 @@ ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan
     return ncclInternalError;
   }
 
-  int ctx = plan->rmaArgs->ctx;
-  struct ncclRmaProxyCtx* rmaProxyCtx = (struct ncclRmaProxyCtx*)comm->rmaState.rmaProxyState.rmaProxyCtxs[ctx];
-
   struct ncclTaskRma* task = ncclIntruQueueHead(&plan->rmaTaskQueueProxy);
   ncclIntruQueueDequeue(&plan->rmaTaskQueueProxy);
+
+  // A WaitSignal plan is single-context; use the wait task's own context.
+  struct ncclRmaProxyCtx* rmaProxyCtx = (struct ncclRmaProxyCtx*)comm->rmaState.rmaProxyState.rmaProxyCtxs[task->ctx];
 
   CUstreamBatchMemOpParams* batchParams = nullptr;
   struct ncclRmaProxyDesc* desc = nullptr;
@@ -679,10 +682,6 @@ ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan
     WARN("RMA proxy task function is %d, expected %d", task->func, ncclFuncWaitSignal);
     ret = ncclInternalError;
     goto exit_non_wait_task;
-  }
-  if (task->ctx != ctx) {
-    WARN("RMA proxy task context is %d, expected %d", task->ctx, ctx);
-    goto invalid_task;
   }
   if (plan->rmaArgs->nRmaTasksProxy != 1) {
     WARN("RMA proxy task count is %d, expected 1", plan->rmaArgs->nRmaTasksProxy);

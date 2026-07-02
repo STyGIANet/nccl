@@ -161,8 +161,6 @@ fail:
 static ncclResult_t ncclRmaCePutLaunchPersist(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
   ncclResult_t ret = ncclSuccess;
   int nRmaTasksCe = plan->rmaArgs->nRmaTasksCe;
-  int ctx = plan->rmaArgs->ctx;
-  struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[ctx];
 
   int lsaSize = comm->devrState.lsaSize;
   int lsaSelf = comm->devrState.lsaSelf;
@@ -177,6 +175,8 @@ static ncclResult_t ncclRmaCePutLaunchPersist(struct ncclComm* comm, struct nccl
   for (int i = 0; i < nRmaTasksCe; i++) {
     struct ncclTaskRma* task = ncclIntruQueueHead(&plan->rmaTaskQueueCe);
     ncclIntruQueueDequeue(&plan->rmaTaskQueueCe);
+    // Per-task context: a put-with-signal on ctx c raises the peer's ctx-c signal.
+    struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[task->ctx];
 
     int peerLsaRank;
     NCCLCHECKGOTO(ncclDevrWorldToLsaRank(comm, task->peer, &peerLsaRank), ret, fail);
@@ -251,8 +251,6 @@ static ncclResult_t ncclRmaCePutLaunchNonPersist(struct ncclComm* comm, struct n
                                                  cudaStream_t stream) {
   ncclResult_t ret = ncclSuccess;
   int nRmaTasksCe = plan->rmaArgs->nRmaTasksCe;
-  int ctx = plan->rmaArgs->ctx;
-  struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[ctx];
 
   int lsaSize = comm->devrState.lsaSize;
   int lsaSelf = comm->devrState.lsaSelf;
@@ -294,6 +292,8 @@ static ncclResult_t ncclRmaCePutLaunchNonPersist(struct ncclComm* comm, struct n
     for (int i = 0; i < nActivePeers; i++) {
       int peer = activePeers[i];
       currentTask = ncclIntruQueueDequeue(&peerTaskQueues[peer]);
+      // Per-task context: each task's signal goes to the peer's own-context buffer.
+      struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[currentTask->ctx];
 
       int peerLsaRank;
       NCCLCHECKGOTO(ncclDevrWorldToLsaRank(comm, currentTask->peer, &peerLsaRank), ret, fail);
@@ -411,8 +411,6 @@ ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* p
   }
 
   bool persistent = plan->persistent;
-  int ctx = plan->rmaArgs->ctx;
-  struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[ctx];
 
   int lsaSize = comm->devrState.lsaSize;
   int lsaSelf = comm->devrState.lsaSelf;
@@ -420,12 +418,12 @@ ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* p
   struct ncclTaskRma* task = ncclIntruQueueHead(&plan->rmaTaskQueueCe);
   ncclIntruQueueDequeue(&plan->rmaTaskQueueCe);
 
+  // A WaitSignal plan is single-context; use the wait task's own context.
+  // (Declared before the goto-based checks so they don't cross its initialization.)
+  struct ncclRmaCeCtx* ceCtx = (struct ncclRmaCeCtx*)comm->rmaState.rmaCeState.rmaCeCtxs[task->ctx];
+
   if (task->func != ncclFuncWaitSignal) {
     WARN("RMA CE task function is %d, expected %d", task->func, ncclFuncWaitSignal);
-    goto invalid_task;
-  }
-  if (task->ctx != ctx) {
-    WARN("RMA CE task context is %d, expected %d", task->ctx, ctx);
     goto invalid_task;
   }
   if (plan->rmaArgs->nRmaTasksCe != 1) {

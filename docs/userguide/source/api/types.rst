@@ -337,6 +337,14 @@ ncclConfig_t
 
   Set the maximum number of peers any rank will concurrently communicate with using P2P communication. Setting this value will influence all send/recv and send/recv-based collectives (all-to-all, scatter, gather). Values less than one or greater than the number of ranks will default to the number of ranks in the communicator.
 
+ .. c:macro:: numRmaCtx
+
+  (since 2.31)
+
+  Number of one-sided RMA communication contexts to provision on the communicator. The ``ctx`` argument of
+  :c:func:`ncclPutSignal`, :c:func:`ncclSignal`, and :c:func:`ncclWaitSignal` must lie in ``[0, numRmaCtx)``.
+  The default value is 1.
+
  .. c:macro:: numRmaSig
 
   (since 2.31)

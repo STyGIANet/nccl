@@ -16,7 +16,6 @@
 #define NCCL_RMA_MAX_CONNECTIONS 4
 
 struct ncclRmaArgs {
-  int ctx;
   ncclFunc_t func;
   int nRmaTasks;
   int nRmaTasksProxy;

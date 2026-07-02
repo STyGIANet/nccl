@@ -118,6 +118,15 @@ all operations in the group have achieved completion.
 Operations to the same peer and context are executed in order: both data delivery and signal
 updates on the remote peer follow the program order.
 
+The communication context is selected by the ``ctx`` argument and must be in ``[0, numRmaCtx)``, where
+``numRmaCtx`` is fixed at communicator creation (default 1). Multiple communication contexts are supported
+starting with NCCL 2.31; earlier versions support only ``ctx`` 0.
+
+For best performance, provision multiple contexts and distribute traffic across them -- for example, split a
+large message into chunks and put each chunk on a different context. The number of contexts that best
+saturates the network is platform-dependent; provisioning at least one per local NIC is a reasonable
+starting point.
+
 Below are a few examples of classic one-sided communication patterns used by parallel applications.
 
 PutSignal and WaitSignal
