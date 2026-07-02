@@ -69,10 +69,9 @@ typedef struct ncclGinHostPlugin ncclGin_t;
 typedef struct ncclGin ncclGin_t;
 #endif
 
-#define NCCL_GIN_MAX_ACTIVE_BACKENDS 4
-
 struct ncclGinStateDevComm {
   int contextCount;
+  int backendIndex;
   void* ginCtx[NCCL_GIN_MAX_CONNECTIONS];
   ncclNetDeviceHandle_t* devHandles[NCCL_GIN_MAX_CONNECTIONS];
   struct ncclGinStateDevComm* next;
@@ -122,10 +121,12 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
                                  struct ncclDevComm* devComm);
 ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const* devComm);
 ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
-                             void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS],
-                             ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS], int winFlags, bool multiSegment,
-                             int memType);
-ncclResult_t ncclGinDeregister(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS]);
+                             void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                             ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
+                             ncclGinWindow_t ginDevWinsLegacy[NCCL_GIN_MAX_CONNECTIONS], int winFlags,
+                             bool multiSegment = false, int memType = NCCL_PTR_CUDA);
+ncclResult_t ncclGinDeregister(struct ncclComm* comm,
+                               void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS]);
 ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError);
 ncclResult_t ncclGinGetDevCount(int ginPluginIndex, int* nPhysDev, int* nVirtDev);
 ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);

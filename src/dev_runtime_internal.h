@@ -18,8 +18,8 @@ struct ncclSegmentWindow;
 struct ncclWindow_vidmem;
 
 struct ncclDevrGinSegmentInfo {
-  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS];
-  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS];
+  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
+  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
   CUmemLocationType memType;
   size_t segmentSize;
 };
@@ -32,8 +32,8 @@ struct ncclDevrMemory {
   void* primaryAddr; // What we hope is the VA of this memory's first mapping.
   size_t size;
   size_t bigOffset; // offset in big VA space
-  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS];
-  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS];
+  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
+  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
   void* rmaHostWins[NCCL_GIN_MAX_CONNECTIONS];
   int winFlags;
   // Per-rank info derived from this rank's own allocation.
@@ -65,7 +65,8 @@ ncclResult_t ncclDevrBuildGinSegmentInfos(struct ncclDevrMemory* mem);
 
 ncclResult_t ncclDevrAllocAndPopulateSegmentWindows(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                     cudaStream_t stream,
-                                                    struct ncclSegmentWindow** outSegmentWindowsDev);
+                                                    struct ncclSegmentWindow** outSegmentWindowsDev,
+                                                    ncclGinWindow_t** outSegmentExtraWinsDev);
 
 ncclResult_t ncclDevrReplaceSegmentWindowsIfNeeded(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                    struct ncclWindow_vidmem* winHost, cudaStream_t stream);

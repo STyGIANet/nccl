@@ -154,14 +154,22 @@ exit:
 // Segment windows need their own shadow-pool allocation because they're variable in size.
 ncclResult_t ncclDevrAllocAndPopulateSegmentWindows(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                     cudaStream_t stream,
-                                                    struct ncclSegmentWindow** outSegmentWindowsDev) {
+                                                    struct ncclSegmentWindow** outSegmentWindowsDev,
+                                                    ncclGinWindow_t** outSegmentExtraWinsDev) {
   ncclResult_t ret = ncclSuccess;
   struct ncclSegmentWindow* segmentWindowsDev = nullptr;
   struct ncclSegmentWindow* segmentWindowsHost = nullptr;
+  ncclGinWindow_t* extraWinsDev = nullptr;
+  ncclGinWindow_t* extraWinsHost = nullptr;
 
   NCCLCHECKGOTO(ncclShadowPoolAlloc(&devr->shadows, sizeof(struct ncclSegmentWindow) * mem->numGinSegments,
                                     (void**)&segmentWindowsDev, (void**)&segmentWindowsHost, stream),
                 ret, fail);
+  NCCLCHECKGOTO(
+    ncclShadowPoolAlloc(&devr->shadows,
+                        sizeof(ncclGinWindow_t) * NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT * mem->numGinSegments,
+                        (void**)&extraWinsDev, (void**)&extraWinsHost, stream),
+    ret, fail);
 
   if (devr->ginEnabled) {
     for (int segment = 0; segment < mem->numGinSegments; segment++) {
@@ -170,31 +178,48 @@ ncclResult_t ncclDevrAllocAndPopulateSegmentWindows(struct ncclDevrState* devr, 
       for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
         segmentWindowsHost[segment].ginWins[i] = mem->ginSegmentInfos[segment].ginDevWins[i];
       }
+      ncclGinWindow_t* segExtraWinsHost =
+        extraWinsHost + (size_t)segment * NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT;
+      for (int i = 0; i < NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT; i++) {
+        segExtraWinsHost[i] = mem->ginSegmentInfos[segment].ginDevWins[NCCL_GIN_MAX_CONNECTIONS + i];
+      }
     }
     CUDACHECKGOTO(cudaMemcpyAsync(segmentWindowsDev, segmentWindowsHost,
                                   sizeof(struct ncclSegmentWindow) * mem->numGinSegments, cudaMemcpyHostToDevice,
                                   stream),
                   ret, fail);
+    CUDACHECKGOTO(
+      cudaMemcpyAsync(extraWinsDev, extraWinsHost,
+                      sizeof(ncclGinWindow_t) * NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT * mem->numGinSegments,
+                      cudaMemcpyHostToDevice, stream),
+      ret, fail);
   }
 
   *outSegmentWindowsDev = segmentWindowsDev;
+  *outSegmentExtraWinsDev = extraWinsDev;
 
 exit:
   return ret;
 fail:
   if (segmentWindowsDev != nullptr) ncclShadowPoolFree(&devr->shadows, segmentWindowsDev, stream);
+  if (extraWinsDev != nullptr) ncclShadowPoolFree(&devr->shadows, extraWinsDev, stream);
   goto exit;
 }
 
 ncclResult_t ncclDevrReplaceSegmentWindowsIfNeeded(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                    struct ncclWindow_vidmem* winHost, cudaStream_t stream) {
   struct ncclSegmentWindow* segmentWindowsDev = nullptr;
+  ncclGinWindow_t* extraWinsDev = nullptr;
   // When a window is created, numGinSegments is always set to `1`.  As we now
   // know that there are multiple segments, we need to reallocate ginMultiSegmentWins.
   if (mem->numGinSegments > 1) {
     NCCLCHECK(ncclShadowPoolFree(&devr->shadows, winHost->ginMultiSegmentWins, stream));
-    NCCLCHECK(ncclDevrAllocAndPopulateSegmentWindows(devr, mem, stream, &segmentWindowsDev));
+    if (winHost->ginMultiSegmentExtraWins != nullptr) {
+      NCCLCHECK(ncclShadowPoolFree(&devr->shadows, winHost->ginMultiSegmentExtraWins, stream));
+    }
+    NCCLCHECK(ncclDevrAllocAndPopulateSegmentWindows(devr, mem, stream, &segmentWindowsDev, &extraWinsDev));
     winHost->ginMultiSegmentWins = segmentWindowsDev;
+    winHost->ginMultiSegmentExtraWins = extraWinsDev;
   }
   return ncclSuccess;
 }

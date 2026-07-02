@@ -46,6 +46,7 @@ struct ncclDevComm {
   ncclGinBarrierHandle_t railGinBarrier;
 
   uint8_t ginConnectionCount;
+  uint8_t backendIndex;
   uint8_t ginNetDeviceTypes[NCCL_GIN_MAX_CONNECTIONS];
   void* ginHandles[NCCL_GIN_MAX_CONNECTIONS];
   int ginSignalCount;

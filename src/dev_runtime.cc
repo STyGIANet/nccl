@@ -512,7 +512,8 @@ static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrM
     int ptrType = (cuMemLocType == CU_MEM_LOCATION_TYPE_HOST_NUMA) ? NCCL_PTR_HOST : NCCL_PTR_CUDA;
     NCCLCHECKGOTO(ncclGinRegister(comm, (char*)mem->primaryAddr + offset, mem->ginSegmentInfos[segment].segmentSize,
                                   mem->ginSegmentInfos[segment].ginHostWins, mem->ginSegmentInfos[segment].ginDevWins,
-                                  mem->winFlags, mem->maxGlobalNumSegments > 1, ptrType),
+                                  mem->ginSegmentInfos[segment].ginDevWins, mem->winFlags,
+                                  mem->maxGlobalNumSegments > 1, ptrType),
                   ret, fail);
     numSegmentsRegistered++;
     offset += mem->ginSegmentInfos[segment].segmentSize;
@@ -520,7 +521,7 @@ static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrM
 
   // Cache ginWins for the single segment case to avoid additional pointer dereference on the device
   if (mem->numGinSegments == 1) {
-    for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+    for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS; i++) {
       mem->ginDevWins[i] = mem->ginSegmentInfos[0].ginDevWins[i];
       mem->ginHostWins[i] = mem->ginSegmentInfos[0].ginHostWins[i];
     }
@@ -746,12 +747,17 @@ static ncclResult_t symWindowCreate(struct ncclComm* comm, struct ncclDevrMemory
   winDevHost->winHost = (void*)win;
   winDevHost->ginOffset4K = memOffset >> 12;
   winDevHost->numSegments = mem->numGinSegments;
-  for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+  for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS; i++) {
     winDevHost->ginWins[i] = mem->ginDevWins[i];
   }
   struct ncclSegmentWindow* segmentWindowsDev;
-  NCCLCHECK(ncclDevrAllocAndPopulateSegmentWindows(devr, mem, stream, &segmentWindowsDev));
+  ncclGinWindow_t* segmentExtraWinsDev;
+  NCCLCHECK(ncclDevrAllocAndPopulateSegmentWindows(devr, mem, stream, &segmentWindowsDev, &segmentExtraWinsDev));
   winDevHost->ginMultiSegmentWins = segmentWindowsDev;
+  winDevHost->ginMultiSegmentExtraWins = segmentExtraWinsDev;
+  for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+    winDevHost->ginWinsLegacy[i] = mem->ginDevWins[i];
+  }
   CUDACHECK(cudaMemcpyAsync(winDev, winDevHost, sizeof(struct ncclWindow_vidmem), cudaMemcpyHostToDevice, stream));
 
   NCCLCHECK(symWindowTableInitOnce(comm, stream)); // ensure devr->windowTable exists
@@ -822,6 +828,10 @@ static ncclResult_t symWindowDestroy(struct ncclComm* comm, struct ncclWindow_vi
 
   if (winDevHost->ginMultiSegmentWins != nullptr) {
     NCCLCHECKGOTO(ncclShadowPoolFree(&devr->shadows, winDevHost->ginMultiSegmentWins, stream), ret, remove_winSorted);
+  }
+  if (winDevHost->ginMultiSegmentExtraWins != nullptr) {
+    NCCLCHECKGOTO(ncclShadowPoolFree(&devr->shadows, winDevHost->ginMultiSegmentExtraWins, stream), ret,
+                  remove_winSorted);
   }
 
   NCCLCHECKGOTO(ncclShadowPoolFree(&devr->shadows, winDev, stream), ret, remove_winSorted);
@@ -1255,12 +1265,15 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
       struct ncclWindow_vidmem* winHost;
       NCCLCHECKGOTO(ncclShadowPoolToHost(&devr->shadows, win->vidmem, &winHost), ret, fail_stream);
       winHost->ginOffset4K = (win->bigOffset - win->memory->bigOffset) >> 12;
-      for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+      for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS; i++) {
         winHost->ginWins[i] = win->memory->ginDevWins[i];
       }
       winHost->numSegments = win->memory->numGinSegments;
 
       NCCLCHECKGOTO(ncclDevrReplaceSegmentWindowsIfNeeded(devr, win->memory, winHost, stream), ret, fail_stream);
+      for (int i = 0; i < NCCL_GIN_MAX_CONNECTIONS; i++) {
+        winHost->ginWinsLegacy[i] = win->memory->ginDevWins[i];
+      }
       CUDACHECKGOTO(cudaMemcpyAsync(win->vidmem, winHost, sizeof(struct ncclWindow_vidmem), cudaMemcpyHostToDevice,
                                     stream),
                     ret, fail_stream);
@@ -1496,6 +1509,15 @@ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* prop
   if (props->version >= NCCL_VERSION(2, 31, 0)) {
     props->commHash = comm->commHash;
     props->ginMinStride = (comm->globalGinSupport == NCCL_GIN_CONNECTION_FULL) ? 1 : comm->contiguousRanksPerHost;
+    props->ginConnectionType = comm->globalGinSupport;
+    memset(props->ginSupport, 0, sizeof(props->ginSupport));
+    if (comm->globalGinSupport != NCCL_GIN_CONNECTION_NONE) {
+      struct ncclGinState* ginState = &comm->sharedRes->ginState;
+      for (int i = 0; i < ginState->numActiveBackends; i++) {
+        int t = (int)ginState->backends[i].ginType;
+        if (t >= 0 && t < NCCL_GIN_MAX_TYPES) props->ginSupport[t] = true;
+      }
+    }
   }
 
   if (devCompat->commPropertiesFilter) {

@@ -76,6 +76,14 @@ typedef enum {
   NCCL_GIN_CONNECTION_CUSTOM_STRIDE,
 } ncclGinConnectionType_t;
 
+typedef enum {
+  NCCL_GIN_TYPE_NONE = 0, // Sentinel: accept any available backend (used in ncclDevCommRequirements)
+  NCCL_GIN_TYPE_PROXY = 2, // intentionally not 1. Must match NCCL_NET_DEVICE_GIN_PROXY for backward compatibility
+  NCCL_GIN_TYPE_GDAKI = 3, // intentionally not 2. Must match NCCL_NET_DEVICE_GIN_GDAKI for backward compatibility
+  NCCL_GIN_TYPE_GPI = 4, // Must match NCCL_NET_DEVICE_GIN_GPI
+  NCCL_GIN_MAX_TYPES = 5,
+} ncclGinType_t;
+
 struct ncclDevCommRequirements {
   /* attributes that users should never touch. */
   size_t size;
@@ -116,6 +124,8 @@ struct ncclDevCommRequirements {
 
   // Stride of ranks to connect for GIN if ginConnectionType is NCCL_GIN_CONNECTION_CUSTOM_STRIDE.
   int ginCustomStride;
+
+  ncclGinType_t ginType;
 };
 
 // clang-format off: maintain hand-formatted code
@@ -142,6 +152,8 @@ struct ncclDevCommRequirements {
     0,                                           /* worldGinBarrierCount */    \
     true,                                        /* ginStrongSignalsRequired */ \
     true,                                        /* ginVaSignalsRequired */     \
+    1,                                           /* ginCustomStride      */     \
+    NCCL_GIN_TYPE_NONE,                          /* ginType */                  \
 }
 // clang-format on
 
@@ -169,12 +181,7 @@ struct ncclTeamRequirements {
     NCCL_VERSION_CODE,                             /* version */ \
   }
 
-typedef enum {
-  NCCL_GIN_TYPE_NONE = 0,
-  NCCL_GIN_TYPE_PROXY = 2, // intentially not 1. Must match NCCL_NET_DEVICE_GIN_PROXY for backward compatibility
-  NCCL_GIN_TYPE_GDAKI = 3, // intentially not 2. Must match NCCL_NET_DEVICE_GIN_GDAKI for backward compatibility
-  NCCL_GIN_TYPE_GPI = 4, // Must match NCCL_NET_DEVICE_GIN_GPI
-} ncclGinType_t;
+#define NCCL_GIN_MAX_ACTIVE_BACKENDS 4
 
 struct ncclCommProperties {
   /* internal use only */
@@ -195,6 +202,8 @@ struct ncclCommProperties {
   ncclGinType_t railedGinType;
   uint64_t commHash;
   int ginMinStride;
+  ncclGinConnectionType_t ginConnectionType;
+  bool ginSupport[64];
 };
 
 NCCL_EXTERN_C __host__ ncclResult_t ncclCommQueryProperties(ncclComm_t comm, ncclCommProperties_t* props);
