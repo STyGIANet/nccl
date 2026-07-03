@@ -20,6 +20,7 @@ typedef enum {
   RAS_DIAG_CHECK_GPU_MODEL = 0,
   RAS_DIAG_CHECK_CUDA_DRIVER_VERSION = 1,
   RAS_DIAG_CHECK_ECC = 2,
+  RAS_DIAG_CHECK_NVLINK = 3,
   // Must remain last. Add new check IDs above this sentinel and add the corresponding dispatch table entry.
   RAS_DIAG_CHECK_COUNT
 } rasDiagnosticsCheckId;
@@ -118,5 +119,9 @@ ncclResult_t rasDiagnosticsEccCollectLocal(const struct rasDiagnosticsContext* c
                                            struct rasDiagnosticsLocalData* data);
 ncclResult_t rasDiagnosticsEccSummarize(const struct rasDiagnosticsContext* ctx,
                                         const struct rasDiagnosticsReporter* reporter, const char* data, int nData);
+ncclResult_t rasDiagnosticsNvLinkCollectLocal(const struct rasDiagnosticsContext* ctx,
+                                              struct rasDiagnosticsLocalData* data);
+ncclResult_t rasDiagnosticsNvLinkSummarize(const struct rasDiagnosticsContext* ctx,
+                                           const struct rasDiagnosticsReporter* reporter, const char* data, int nData);
 
 #endif // NCCL_RAS_DIAGNOSTICS_H_

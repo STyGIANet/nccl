@@ -680,3 +680,151 @@ exit:
   free(records);
   return ret;
 }
+
+// *************************************************************************
+// Per-NVLink operational state check.
+// *************************************************************************
+// Counts each device's valid NVLinks and how many are not enabled. PCIe-only devices report zero links and are
+// skipped silently.
+
+// NVML has no valid-link count query, so scan link IDs [0, RAS_DIAG_NVLINK_MAX_LINKS) and keep the ones it marks valid.
+#define RAS_DIAG_NVLINK_MAX_LINKS 18
+
+struct rasDiagnosticsNvLinkData {
+  uint8_t nLinks; // Valid NVLinks reported by NVML.
+  uint8_t nInactive; // Valid NVLinks not in the NVML_FEATURE_ENABLED state.
+};
+
+static ncclResult_t rasDiagnosticsNvLinkFillLocalData(const struct rasDiagnosticsCommSnapshot* comm, void* checkData) {
+  struct rasDiagnosticsNvLinkData* nvlData = (struct rasDiagnosticsNvLinkData*)checkData;
+
+  nvlData->nLinks = 0;
+  nvlData->nInactive = 0;
+
+  if (comm->nvmlDev >= 0 && comm->nvmlDev < ncclNvmlDeviceCount) {
+    nvmlDevice_t device;
+    if (ncclNvmlDeviceGetHandleByIndex((unsigned int)comm->nvmlDev, &device) == ncclSuccess) {
+      for (unsigned int link = 0; link < RAS_DIAG_NVLINK_MAX_LINKS; link++) {
+        unsigned int valid = 0;
+        if (ncclNvmlDeviceGetNvLinkCapability(device, link, NVML_NVLINK_CAP_VALID, &valid) != ncclSuccess || valid == 0)
+          continue;
+        nvlData->nLinks++;
+        // Unreadable state counts as inactive rather than assumed healthy.
+        nvmlEnableState_t state = NVML_FEATURE_DISABLED;
+        if (ncclNvmlDeviceGetNvLinkState(device, link, &state) != ncclSuccess || state != NVML_FEATURE_ENABLED)
+          nvlData->nInactive++;
+      }
+    }
+  }
+  return ncclSuccess;
+}
+
+ncclResult_t rasDiagnosticsNvLinkCollectLocal(const struct rasDiagnosticsContext* ctx,
+                                              struct rasDiagnosticsLocalData* data) {
+  NCCLCHECK(rasDiagnosticsCollectLocalRecords(ctx, sizeof(struct rasDiagnosticsNvLinkData),
+                                              rasDiagnosticsNvLinkFillLocalData, data));
+  return ncclSuccess;
+}
+
+static const struct rasDiagnosticsNvLinkData* rasDiagnosticsNvLinkDataFromRecord(const char* record) {
+  return (const struct rasDiagnosticsNvLinkData*)(record + sizeof(struct rasDiagnosticsRankHeader));
+}
+
+ncclResult_t rasDiagnosticsNvLinkSummarize(const struct rasDiagnosticsContext* ctx,
+                                           const struct rasDiagnosticsReporter* reporter, const char* data, int nData) {
+  ncclResult_t ret = ncclSuccess;
+  char* records = nullptr;
+  const size_t recordStride = rasDiagnosticsLocalRecordStride(sizeof(struct rasDiagnosticsNvLinkData));
+  int nRecords;
+
+  (void)ctx;
+
+  if (reporter == nullptr || reporter->emit == nullptr) {
+    WARN("RAS diagnostics NVLink check received invalid reporter");
+    return ncclInternalError;
+  }
+  if (nData == 0) return ncclSuccess;
+  if (data == nullptr) {
+    WARN("RAS diagnostics NVLink check received null data with size %d", nData);
+    return ncclInternalError;
+  }
+  if (nData < 0 || nData % (int)recordStride != 0) {
+    WARN("RAS diagnostics NVLink check received malformed data size %d", nData);
+    return ncclInternalError;
+  }
+
+  nRecords = nData / (int)recordStride;
+  NCCLCHECK(ncclCalloc(&records, nData));
+  memcpy(records, data, nData);
+  qsort(records, nRecords, recordStride, rasDiagnosticsRankHeaderCompare);
+
+  for (int start = 0; start < nRecords;) {
+    const char* startRecord = records + start * recordStride;
+    const struct rasDiagnosticsRankHeader* startRank = rasDiagnosticsRankHeaderFromRecord(startRecord);
+    // Sorted by rank, so the group's first record is its lowest rank; use it as the reference.
+    int refLinks = rasDiagnosticsNvLinkDataFromRecord(startRecord)->nLinks;
+    int commNRanks = startRank->commNRanks;
+    int countMismatchRanks[RAS_DIAG_RANK_SET_MAX];
+    int inactiveRanks[RAS_DIAG_RANK_SET_MAX];
+    int nCountMismatchStored = 0, nCountMismatch = 0;
+    int nInactiveStored = 0, nInactive = 0;
+    int nWithLinks = 0;
+    int end = start;
+
+    while (end < nRecords) {
+      const char* record = records + end * recordStride;
+      const struct rasDiagnosticsRankHeader* rank = rasDiagnosticsRankHeaderFromRecord(record);
+      const struct rasDiagnosticsNvLinkData* nvlData;
+
+      if (end > start && rasDiagnosticsCommIdCompare(&startRank->commId, &rank->commId) != 0) break;
+      nvlData = rasDiagnosticsNvLinkDataFromRecord(record);
+      if (nvlData->nLinks > 0) nWithLinks++;
+      if (nvlData->nLinks != refLinks) {
+        if (nCountMismatchStored < RAS_DIAG_RANK_SET_MAX) countMismatchRanks[nCountMismatchStored++] = rank->commRank;
+        nCountMismatch++;
+      }
+      if (nvlData->nInactive > 0) {
+        if (nInactiveStored < RAS_DIAG_RANK_SET_MAX) inactiveRanks[nInactiveStored++] = rank->commRank;
+        nInactive++;
+      }
+      end++;
+    }
+
+    if (end - start != commNRanks) {
+      NCCLCHECKGOTO(rasDiagnosticsReportIncomplete(reporter, "NVLink", startRank, end - start), ret, exit);
+    } else if (nWithLinks == 0) {
+      // No device exposes NVLink (e.g. PCIe-only); nothing to report.
+    } else if (nCountMismatch == 0 && nInactive == 0) {
+      NCCLCHECKGOTO(
+        rasDiagnosticsReport(reporter, RAS_DIAG_TAG_OK,
+                             "NVLink: found %d link(s) per device, all active across %d ranks in comm 0x%lx", refLinks,
+                             commNRanks, startRank->commId.commHash),
+        ret, exit);
+    } else {
+      if (nCountMismatch > 0) {
+        char rankSet[128];
+        rasDiagnosticsFormatRankSet(rankSet, sizeof(rankSet), countMismatchRanks, nCountMismatchStored, nCountMismatch);
+        NCCLCHECKGOTO(
+          rasDiagnosticsReport(
+            reporter, RAS_DIAG_TAG_INFO,
+            "NVLink: link-count mismatch across %d ranks in comm 0x%lx, rank(s) %s differ from rank %d (%d)",
+            commNRanks, startRank->commId.commHash, rankSet, startRank->commRank, refLinks),
+          ret, exit);
+      }
+      if (nInactive > 0) {
+        char rankSet[128];
+        rasDiagnosticsFormatRankSet(rankSet, sizeof(rankSet), inactiveRanks, nInactiveStored, nInactive);
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                                           "NVLink: inactive link(s) on rank(s) %s across %d ranks in comm 0x%lx",
+                                           rankSet, commNRanks, startRank->commId.commHash),
+                      ret, exit);
+      }
+    }
+
+    start = end;
+  }
+
+exit:
+  free(records);
+  return ret;
+}
