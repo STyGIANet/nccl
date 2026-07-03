@@ -57,6 +57,7 @@ static const struct rasDiagnosticsCheck rasDiagnosticsChecks[RAS_DIAG_CHECK_COUN
   {RAS_DIAG_CHECK_GPU_MODEL, rasDiagnosticsGpuModelCollectLocal, rasDiagnosticsGpuModelSummarize},
   {RAS_DIAG_CHECK_CUDA_DRIVER_VERSION, rasDiagnosticsCudaDriverVersionCollectLocal,
    rasDiagnosticsCudaDriverVersionSummarize},
+  {RAS_DIAG_CHECK_ECC, rasDiagnosticsEccCollectLocal, rasDiagnosticsEccSummarize},
 };
 
 static ncclResult_t rasDiagnosticsSummarizePeerPayloads(

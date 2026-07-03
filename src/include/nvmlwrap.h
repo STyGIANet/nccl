@@ -327,6 +327,21 @@ typedef struct {
 typedef nvmlSystemConfComputeSettings_v1_t nvmlSystemConfComputeSettings_t;
 #define nvmlSystemConfComputeSettings_v1 NVML_STRUCT_VERSION(SystemConfComputeSettings, 1)
 
+// ECC counter enums from nvml.h, reduced to the values used by the diagnostics ECC check.
+typedef enum nvmlMemoryErrorType_enum {
+  NVML_MEMORY_ERROR_TYPE_CORRECTED = 0,
+  NVML_MEMORY_ERROR_TYPE_UNCORRECTED = 1
+} nvmlMemoryErrorType_t;
+
+typedef enum nvmlEccCounterType_enum {
+  NVML_VOLATILE_ECC = 0
+} nvmlEccCounterType_t;
+
+typedef enum nvmlMemoryLocation_enum {
+  NVML_MEMORY_LOCATION_DRAM = 2,
+  NVML_MEMORY_LOCATION_SRAM = 7
+} nvmlMemoryLocation_t;
+
 /* End of nvml.h */
 #endif // NCCL_NVML_DIRECT
 
@@ -358,6 +373,9 @@ ncclResult_t ncclNvmlDeviceGetIndex(nvmlDevice_t device, unsigned* index);
 ncclResult_t ncclNvmlDeviceGetHandleByIndex(unsigned int index, nvmlDevice_t* device);
 ncclResult_t ncclNvmlDeviceGetName(nvmlDevice_t device, char* name, unsigned int length);
 ncclResult_t ncclNvmlDeviceGetCount(unsigned int* deviceCount);
+ncclResult_t ncclNvmlDeviceGetMemoryErrorCounter(nvmlDevice_t device, nvmlMemoryErrorType_t errorType,
+                                                 nvmlEccCounterType_t counterType, nvmlMemoryLocation_t locationType,
+                                                 unsigned long long* count);
 ncclResult_t ncclNvmlDeviceGetNvLinkState(nvmlDevice_t device, unsigned int link, nvmlEnableState_t* isActive);
 ncclResult_t ncclNvmlDeviceGetNvLinkRemotePciInfo(nvmlDevice_t device, unsigned int link, nvmlPciInfo_t* pci);
 ncclResult_t ncclNvmlDeviceGetNvLinkRemoteDeviceType(nvmlDevice_t device, unsigned int link,

@@ -34,6 +34,9 @@ NCCL_NVML_FN(nvmlDeviceGetHandleByPciBusId, nvmlReturn_t, (const char* pciBusId,
 NCCL_NVML_FN(nvmlDeviceGetHandleByIndex, nvmlReturn_t, (unsigned int index, nvmlDevice_t* device))
 NCCL_NVML_FN(nvmlDeviceGetIndex, nvmlReturn_t, (nvmlDevice_t device, unsigned* index))
 NCCL_NVML_FN(nvmlDeviceGetName, nvmlReturn_t, (nvmlDevice_t device, char* name, unsigned int length))
+NCCL_NVML_FN(nvmlDeviceGetMemoryErrorCounter, nvmlReturn_t,
+             (nvmlDevice_t device, nvmlMemoryErrorType_t errorType, nvmlEccCounterType_t counterType,
+              nvmlMemoryLocation_t locationType, unsigned long long* count))
 NCCL_NVML_FN(nvmlErrorString, char const*, (nvmlReturn_t r))
 NCCL_NVML_FN(nvmlDeviceGetNvLinkState, nvmlReturn_t,
              (nvmlDevice_t device, unsigned int link, nvmlEnableState_t* isActive))
@@ -105,6 +108,7 @@ ncclResult_t ncclNvmlEnsureInitialized() {
       {(void**)&pfn_nvmlDeviceGetHandleByIndex, "nvmlDeviceGetHandleByIndex"},
       {(void**)&pfn_nvmlDeviceGetIndex, "nvmlDeviceGetIndex"},
       {(void**)&pfn_nvmlDeviceGetName, "nvmlDeviceGetName"},
+      {(void**)&pfn_nvmlDeviceGetMemoryErrorCounter, "nvmlDeviceGetMemoryErrorCounter"},
       {(void**)&pfn_nvmlErrorString, "nvmlErrorString"},
       {(void**)&pfn_nvmlDeviceGetNvLinkState, "nvmlDeviceGetNvLinkState"},
       {(void**)&pfn_nvmlDeviceGetNvLinkRemotePciInfo, "nvmlDeviceGetNvLinkRemotePciInfo"},
@@ -245,6 +249,15 @@ ncclResult_t ncclNvmlDeviceGetName(nvmlDevice_t device, char* name, unsigned int
   NCCLCHECK(ncclNvmlEnsureInitialized());
   std::lock_guard<std::mutex> locked(lock);
   NVMLTRY(nvmlDeviceGetName, device, name, length);
+  return ncclSuccess;
+}
+
+ncclResult_t ncclNvmlDeviceGetMemoryErrorCounter(nvmlDevice_t device, nvmlMemoryErrorType_t errorType,
+                                                 nvmlEccCounterType_t counterType, nvmlMemoryLocation_t locationType,
+                                                 unsigned long long* count) {
+  NCCLCHECK(ncclNvmlEnsureInitialized());
+  std::lock_guard<std::mutex> locked(lock);
+  NVMLTRY(nvmlDeviceGetMemoryErrorCounter, device, errorType, counterType, locationType, count);
   return ncclSuccess;
 }
 
