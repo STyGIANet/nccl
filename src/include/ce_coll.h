@@ -16,6 +16,12 @@
 #define NCCL_CE_SYNC_OPS_PER_RANK_MC 2
 #define NCCL_CE_SYNC_OPS_PER_RANK_UC 3
 
+enum ncclCeMethodId {
+  ncclCeMethodId_AllGather_UC,
+  ncclCeMethodId_AllGather_MC,
+  ncclCeMethodId_Count
+};
+
 struct ncclCeColl {
   uint8_t* baseUCSymReadyPtr;
   uint8_t* baseUCSymComplPtr;
@@ -25,6 +31,7 @@ struct ncclCeColl {
   bool useCompletePtr;
   uint32_t intraBatchSyncFreq;
   uint64_t intraBatchSyncMsgThreshold;
+  int64_t agMulticastThreshold;  // user override (>=0); -1 -> use cost model
   struct ncclDevrWindow* ceSyncWin;
   uint32_t* ceSeqNumDev; // Index 0 for the current value, 1 for GRAPH_SYNC_VALUE
 };
@@ -87,6 +94,8 @@ ncclResult_t ncclLaunchCeColl(struct ncclComm* comm, struct ncclKernelPlan* plan
 ncclResult_t scheduleCeCollTaskToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan);
 
 ncclResult_t ncclCeAllGather(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream);
+
+int ncclCeAllGatherUseMulticast(struct ncclComm* comm, size_t perRankBytes, int captured, int inPlace);
 
 ncclResult_t ncclCeScatter(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream);
 

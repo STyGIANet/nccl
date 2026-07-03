@@ -187,22 +187,24 @@ ncclResult_t ncclTuningGetChannels(struct ncclTuningInput_t* const input, struct
 /*
   Translate a tuning id into the kernel identifiers.
 */
-ncclResult_t ncclTuningExpandId(int tuningId, int* algo, int* proto, int* symKernelId) {
+ncclResult_t ncclTuningExpandId(int tuningId, int* algo, int* proto, int* symKernelId, int* ceMethodId) {
   if (tuningId < 0 || tuningId >= NCCL_TUNING_COUNT) {
     return ncclInvalidUsage;
   }
   if (algo != nullptr) *algo = NCCL_ALGO_UNDEF;
   if (proto != nullptr) *proto = NCCL_PROTO_UNDEF;
   if (symKernelId != nullptr) *symKernelId = ncclSymkKernelId_Count;
+  if (ceMethodId != nullptr) *ceMethodId = ncclCeMethodId_Count;
   if (tuningId < NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS) {
     if (algo == nullptr || proto == nullptr) return ncclInvalidUsage;
     *algo = tuningId / NCCL_NUM_PROTOCOLS;
     *proto = tuningId % NCCL_NUM_PROTOCOLS;
-  } else if (tuningId >= NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS && tuningId < NCCL_TUNING_COUNT) {
+  } else if (tuningId < NCCL_TUNING_CE_METHOD_ID_OFFSET) {
     if (symKernelId == nullptr) return ncclInvalidUsage;
     *symKernelId = tuningId - NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS;
   } else {
-    return ncclInvalidUsage;
+    if (ceMethodId == nullptr) return ncclInvalidUsage;
+    *ceMethodId = tuningId - NCCL_TUNING_CE_METHOD_ID_OFFSET;
   }
   return ncclSuccess;
 }

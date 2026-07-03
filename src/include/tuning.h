@@ -12,15 +12,15 @@
 #include "nccl.h"
 #include "nccl_tuner.h"
 #include "sym_kernels.h"
+#include "ce_coll.h"
 
-#define NCCL_TUNING_COUNT (NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS + ncclSymkKernelId_Count)
 #define NCCL_TUNING_SYM_KERNEL_ID_OFFSET (NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS)
+#define NCCL_TUNING_CE_METHOD_ID_OFFSET (NCCL_TUNING_SYM_KERNEL_ID_OFFSET + ncclSymkKernelId_Count)
+#define NCCL_TUNING_COUNT (NCCL_TUNING_CE_METHOD_ID_OFFSET + ncclCeMethodId_Count)
 
-#define NCCL_TUNING_MASK_ALL ((1ul << NCCL_TUNING_COUNT) - 1ul)
-#define NCCL_TUNING_MASK_GENERAL_KERNELS ((1ul << (NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS)) - 1ul)
-#define NCCL_TUNING_MASK_SYM_KERNELS \
-  ((1ul << (NCCL_NUM_ALGORITHMS * NCCL_NUM_PROTOCOLS + ncclSymkKernelId_Count)) - 1ul - \
-   (NCCL_TUNING_MASK_GENERAL_KERNELS))
+#define NCCL_TUNING_MASK_GENERAL_KERNELS ((1ul << NCCL_TUNING_SYM_KERNEL_ID_OFFSET) - 1ul)
+#define NCCL_TUNING_MASK_SYM_KERNELS ((1ul << NCCL_TUNING_CE_METHOD_ID_OFFSET) - 1ul - NCCL_TUNING_MASK_GENERAL_KERNELS)
+#define NCCL_TUNING_MASK_CE ((1ul << NCCL_TUNING_COUNT) - (1ul << NCCL_TUNING_CE_METHOD_ID_OFFSET))
 
 #define NCCL_TUNING_ENTRY_INIT_VALUE -1
 #define NCCL_TUNING_RESULT_INIT \
@@ -30,6 +30,7 @@
    /*.algo =*/NCCL_ALGO_UNDEF, \
    /*.proto =*/NCCL_PROTO_UNDEF, \
    /*.symKernelId =*/ncclSymkKernelId_Count, \
+   /*.ceMethodId =*/ncclCeMethodId_Count, \
    /*.nChannels =*/NCCL_TUNING_ENTRY_INIT_VALUE, \
    /*.maxChannels =*/NCCL_TUNING_ENTRY_INIT_VALUE, \
    /*.nWarps =*/NCCL_TUNING_ENTRY_INIT_VALUE, \
@@ -42,6 +43,7 @@ struct ncclTuningResult_t {
   int algo;
   int proto;
   int symKernelId;
+  int ceMethodId;
   int nChannels;
   int maxChannels;
   int nWarps;
@@ -65,6 +67,8 @@ struct ncclTuningInput_t {
   int collNetSupport;
   int nvlsSupport;
   bool symAligned16B; // Check for TMA eligibility in sym scheduler
+  int captured;
+  int inPlace;
 };
 
 struct ncclTuningContext_t {

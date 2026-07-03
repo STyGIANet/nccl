@@ -11,7 +11,7 @@
 ncclResult_t ncclTuningTreeModelInit(struct ncclComm* comm, int id, int enabled[NCCL_NUM_FUNCTIONS]) {
   ncclResult_t ret = ncclSuccess;
   int algo, proto;
-  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr));
+  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr, nullptr));
   int compCapIndex = ncclTuningGetCompCapIndex(comm);
   int index1, index2;
   ncclTuningGetConstantsIndexes(comm, &index1, &index2);

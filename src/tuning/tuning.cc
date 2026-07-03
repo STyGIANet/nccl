@@ -136,7 +136,7 @@ ncclResult_t ncclTuningComputeAllTunings(struct ncclTuningInput_t* const input,
       tuning.valid = 0;
       continue;
     }
-    NCCLCHECK(ncclTuningExpandId(i, &tuning.algo, &tuning.proto, &tuning.symKernelId));
+    NCCLCHECK(ncclTuningExpandId(i, &tuning.algo, &tuning.proto, &tuning.symKernelId, &tuning.ceMethodId));
     NCCLCHECKGOTO(ncclTuningComputeTuning(i, input, &tuning), ret, fail);
     if (tuning.valid) NCCLCHECKGOTO(ncclTuningResultListPushFront(tunings, tuning), ret, fail);
   }
@@ -187,6 +187,7 @@ ncclResult_t ncclTuningCompute(struct ncclTuningInput_t* const input, struct ncc
     bestTuning.algo = NCCL_ALGO_RING;
     bestTuning.proto = NCCL_PROTO_SIMPLE;
     bestTuning.symKernelId = ncclSymkKernelId_Count;
+    bestTuning.ceMethodId = ncclCeMethodId_Count;
     bestTuning.nChannels = 0;
     bestTuning.maxChannels = 0;
     bestTuning.nWarps = 0;
@@ -283,15 +284,16 @@ ncclResult_t ncclTuningCompute(struct ncclTuningInput_t* const input, struct ncc
     }
   }
 
-  INFO(NCCL_TUNING,
-       "Best tuning { .id = %d, .valid = %d, timeUs = %f,  .algo = %s, .proto = %s, .symKernelId = %s, nChannels = %d, "
-       "maxChannels = %d, nWarps = %d, forced = %d }",
-       bestTuning.id, bestTuning.valid, bestTuning.timeUs, ncclAlgoToString(bestTuning.algo),
-       ncclProtoToString(bestTuning.proto), ncclSymkKernelIdToString(bestTuning.symKernelId), bestTuning.nChannels,
-       bestTuning.maxChannels, bestTuning.nWarps, bestTuning.forced);
+  INFO(
+    NCCL_TUNING,
+    "Best tuning { .id = %d, .valid = %d, timeUs = %f,  .algo = %s, .proto = %s, .symKernelId = %s, .ceMethodId = %d, "
+    "nChannels = %d, maxChannels = %d, nWarps = %d, forced = %d }",
+    bestTuning.id, bestTuning.valid, bestTuning.timeUs, ncclAlgoToString(bestTuning.algo),
+    ncclProtoToString(bestTuning.proto), ncclSymkKernelIdToString(bestTuning.symKernelId), bestTuning.ceMethodId,
+    bestTuning.nChannels, bestTuning.maxChannels, bestTuning.nWarps, bestTuning.forced);
 
   if ((bestTuning.algo == NCCL_ALGO_UNDEF || bestTuning.proto == NCCL_PROTO_UNDEF) &&
-      bestTuning.symKernelId == ncclSymkKernelId_Count) {
+      bestTuning.symKernelId == ncclSymkKernelId_Count && bestTuning.ceMethodId == ncclCeMethodId_Count) {
     char ncclAlgoEnvStr[1024] = "";
     char ncclProtoEnvStr[1024] = "";
     char ncclSymKernelIdEnvStr[1024] = "";

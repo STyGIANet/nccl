@@ -270,6 +270,8 @@ Enable order: Broadcast, Reduce, AllGather, ReduceScatter, AllReduce
   {nullptr, ncclTuningSymkModelSim, nullptr, {0, 0, 0, 1, 0}}, // ReduceScatter_LDMC
   {nullptr, ncclTuningSymkModelSim, nullptr, {0, 0, 0, 1, 0}}, // ReduceScatter_RailA2A_LsaLD
   {nullptr, ncclTuningSymkModelSim, nullptr, {0, 0, 0, 1, 0}}, // ReduceScatter_RailA2A_LsaLDMC
+  {nullptr, ncclTuningCeModelSim, nullptr, {0, 0, 1, 0, 0}}, // CE AllGather Unicast
+  {nullptr, ncclTuningCeModelSim, nullptr, {0, 0, 1, 0, 0}}, // CE AllGather Multicast
 };
 
 /*
@@ -344,8 +346,10 @@ ncclResult_t ncclTuningCostModelInit(struct ncclComm* comm) {
     if (model->init != nullptr) {
       NCCLCHECKGOTO(model->init(comm, i, comm->tuningContext.enabled[i]), ret, fail);
     }
+    // TODO: allow NCCL_ALGO=CE to force CE-only tuning; CE is currently excluded from algo/proto forcing.
+    if (i >= NCCL_TUNING_CE_METHOD_ID_OFFSET) continue;
     int algo, proto, symKernelId;
-    NCCLCHECK(ncclTuningExpandId(i, &algo, &proto, &symKernelId));
+    NCCLCHECK(ncclTuningExpandId(i, &algo, &proto, &symKernelId, nullptr));
     for (int f = 0; f < NCCL_NUM_FUNCTIONS; f++) {
       if (comm->tuningContext.forced[f] == 0 || comm->tuningContext.enabled[i][f] == 0) continue;
       comm->tuningContext.enabled[i][f] = 0;

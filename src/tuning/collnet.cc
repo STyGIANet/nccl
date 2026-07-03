@@ -16,7 +16,7 @@ ncclResult_t ncclTuningCollnetModelInit(struct ncclComm* comm, int id, int enabl
   }
 
   int algo, proto;
-  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr));
+  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr, nullptr));
 
   // Disable CollNet+Direct on non-NVSwitch systems with multiple local ranks.
   // Keep CollNet+Chain disabled on non-NVSwitch systems.

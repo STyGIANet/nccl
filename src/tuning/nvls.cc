@@ -23,7 +23,7 @@ ncclResult_t ncclTuningNvlsModelInit(struct ncclComm* comm, int id, int enabled[
     return ncclSuccess;
   }
   int algo, proto;
-  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr));
+  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr, nullptr));
 
   if ((algo == NCCL_ALGO_NVLS || algo == NCCL_ALGO_NVLS_TREE) && (proto != NCCL_PROTO_SIMPLE)) {
     memset(enabled, 0, NCCL_NUM_FUNCTIONS * sizeof(int));

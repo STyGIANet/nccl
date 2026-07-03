@@ -26,7 +26,7 @@ ncclResult_t ncclTuningPatModelInit(struct ncclComm* comm, int id, int enabled[N
     return ncclSuccess;
   }
   int algo, proto;
-  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr));
+  NCCLCHECK(ncclTuningExpandId(id, &algo, &proto, nullptr, nullptr));
   if (proto != NCCL_PROTO_SIMPLE) {
     memset(enabled, 0, NCCL_NUM_FUNCTIONS * sizeof(int));
     return ncclSuccess;

@@ -11,6 +11,11 @@
 #include "cudawrap.h"
 #include "ce_coll.h"
 #include "alloc.h"
+#include "tuning.h"
+
+// User override: when set (>= 0) the cost model is bypassed and this byte
+// threshold decides multicast (sendSize <= threshold). -1 (unset) -> cost model.
+NCCL_PARAM(CeCollAgMulticastThreshold, "CE_COLL_AG_MULTICAST_THRESHOLD", -1);
 
 // Static constant for graph synchronization
 static const uint32_t GRAPH_SYNC_VALUE = 1;
@@ -23,6 +28,31 @@ static const uint64_t CE_COLL_INTRA_BATCH_SYNC_MSG_THRESHOLD = 512 * 1024 * 1024
 
 // Maximum size of a single sub-chunk for hierarchical collective
 static constexpr size_t HIER_COLL_MAX_CHUNK_SIZE = 64 * 1024 * 1024;
+
+// Decide multicast vs unicast for CE AllGather: a CE-only tuning mask lets
+// ncclTuningCompute pick the fastest CE method (UC vs MC).
+int ncclCeAllGatherUseMulticast(struct ncclComm* comm, size_t perRankBytes, int captured, int inPlace) {
+  if (!comm->symkState.hasLsaMultimem) return 0;
+
+  int64_t thresholdOverride = comm->ceColl.agMulticastThreshold;
+  if (thresholdOverride >= 0) {
+    return ((int64_t)perRankBytes <= thresholdOverride) ? 1 : 0;
+  }
+
+  struct ncclTuningInput_t input = {};
+  input.comm = comm;
+  input.tuningMask = NCCL_TUNING_MASK_CE;
+  input.func = ncclFuncAllGather;
+  input.datatype = ncclInt8;
+  input.nBytes = perRankBytes;
+  input.count = perRankBytes;
+  input.captured = captured;
+  input.inPlace = inPlace;
+
+  struct ncclTuningResult_t result = NCCL_TUNING_RESULT_INIT;
+  if (ncclTuningCompute(&input, &result) != ncclSuccess) return 0;
+  return (result.ceMethodId == ncclCeMethodId_AllGather_MC) ? 1 : 0;
+}
 
 ncclResult_t ncclCeInit(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;
@@ -52,6 +82,7 @@ ncclResult_t ncclCeInit(struct ncclComm* comm) {
   comm->ceColl.useCompletePtr = false;
   comm->ceColl.intraBatchSyncFreq = CE_COLL_INTRA_BATCH_SYNC_FREQ;
   comm->ceColl.intraBatchSyncMsgThreshold = CE_COLL_INTRA_BATCH_SYNC_MSG_THRESHOLD;
+  comm->ceColl.agMulticastThreshold = (int64_t)ncclParamCeCollAgMulticastThreshold();
   NCCLCHECKGOTO(ncclCudaMemcpy(comm->ceColl.ceSeqNumDev + 1, (uint32_t*)&GRAPH_SYNC_VALUE, 1), ret, fail);
   INFO(NCCL_INIT, "Init CE, rank %d baseUCSymReadyPtr %p, baseUCSymComplPtr %p, seq num %d", comm->rank,
        comm->ceColl.baseUCSymReadyPtr, comm->ceColl.baseUCSymComplPtr, comm->ceColl.ceSeqNum);
@@ -510,28 +541,45 @@ ncclResult_t ncclCeAllGather(struct ncclComm* comm, struct ncclCeCollArgs* args,
   // Ensure all ranks are ready before starting transfers
   NCCLCHECKGOTO(ncclMemOpSync(comm, stream, args), ret, fail);
 
-  // Copy own data to receive buffer if operation is out-of-place
-  if (myRecvBuff != mySendBuff) {
-    batchOpsParams.srcs[batchOpsParams.numOps] = (void*)mySendBuff;
-    batchOpsParams.dsts[batchOpsParams.numOps] = (void*)myRecvBuff;
-    batchOpsParams.sizes[batchOpsParams.numOps] = chunkBytes;
-    batchOpsParams.numOps++;
-  }
+  // declare-then-assign: NCCLCHECKGOTO's goto can't cross a scalar initialization.
+  bool agUseMulticast;
+  agUseMulticast = ncclCeAllGatherUseMulticast(comm, chunkBytes, ncclCudaGraphValid(comm->planner.capturingGraph),
+                                               mySendBuff == myRecvBuff);
 
-  // Copy data to other ranks
-  for (int r = 1; r < lsaSize; r++) {
-    int targetRank = (myLsaRank + r) % lsaSize;
+  if (agUseMulticast) {
+    // Multicast path: a single write to the multicast pointer covers
+    // every rank in the LSA team (including self), so no self-copy and
+    // no incast — incast never happens for multicast.
+    void* mcDstPtr;
     offset = myRecvBuff - (uint8_t*)args->recvWin->userPtr;
-    NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, args->recvWin, offset, targetRank, &peerRecvBuff), ret, fail);
+    NCCLCHECKGOTO(ncclDevrGetLsaTeamPtrMC(comm, args->recvWin, offset, ncclTeamLsa(comm), &mcDstPtr), ret, fail);
     batchOpsParams.srcs[batchOpsParams.numOps] = (void*)mySendBuff;
-    batchOpsParams.dsts[batchOpsParams.numOps] = (void*)peerRecvBuff;
+    batchOpsParams.dsts[batchOpsParams.numOps] = (void*)mcDstPtr;
     batchOpsParams.sizes[batchOpsParams.numOps] = chunkBytes;
     batchOpsParams.numOps++;
+    batchOpsParams.intraBatchSync = false;
+  } else {
+    // Unicast path (original behaviour).
+    // Copy own data to receive buffer if operation is out-of-place.
+    if (myRecvBuff != mySendBuff) {
+      batchOpsParams.srcs[batchOpsParams.numOps] = (void*)mySendBuff;
+      batchOpsParams.dsts[batchOpsParams.numOps] = (void*)myRecvBuff;
+      batchOpsParams.sizes[batchOpsParams.numOps] = chunkBytes;
+      batchOpsParams.numOps++;
+    }
+    // Copy data to other ranks.
+    for (int r = 1; r < lsaSize; r++) {
+      int targetRank = (myLsaRank + r) % lsaSize;
+      offset = myRecvBuff - (uint8_t*)args->recvWin->userPtr;
+      NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, args->recvWin, offset, targetRank, &peerRecvBuff), ret, fail);
+      batchOpsParams.srcs[batchOpsParams.numOps] = (void*)mySendBuff;
+      batchOpsParams.dsts[batchOpsParams.numOps] = (void*)peerRecvBuff;
+      batchOpsParams.sizes[batchOpsParams.numOps] = chunkBytes;
+      batchOpsParams.numOps++;
+    }
+    batchOpsParams.intraBatchSync = (batchOpsParams.numOps > comm->ceColl.intraBatchSyncFreq &&
+                                     chunkBytes * batchOpsParams.numOps >= comm->ceColl.intraBatchSyncMsgThreshold);
   }
-
-  // Check if we need to perform intra-batch synchronization
-  batchOpsParams.intraBatchSync = (batchOpsParams.numOps > comm->ceColl.intraBatchSyncFreq &&
-                                   chunkBytes * batchOpsParams.numOps >= comm->ceColl.intraBatchSyncMsgThreshold);
 
   // Launch the batch operations
   NCCLCHECKGOTO(ncclCeLaunchBatchOps(comm, &batchOpsParams, stream, args), ret, fail);
@@ -1079,6 +1127,16 @@ ncclResult_t ncclHierCeAllGather(struct ncclComm* comm, struct ncclKernelPlan* p
   // ====================================================================
   NCCLCHECKGOTO(ncclMemOpSync(comm, stream, args), ret, fail);
 
+  // Multicast/unicast switch for the intra-node scatters in Phase 4 + Phase 5.
+  // Same heuristic as ncclCeAllGather: short transfers fit nicely in a single
+  // multicast write to the LSA team, longer ones stay on the original N-1
+  // unicast loop (which is better at hiding tail latency).
+  // declare-then-assign: NCCLCHECKGOTO's goto can't cross a scalar initialization.
+  bool agUseMulticast;
+  agUseMulticast =
+    ncclCeAllGatherUseMulticast(comm, perRankBytes, ncclCudaGraphValid(comm->planner.capturingGraph),
+                                (const uint8_t*)sendbuff == (const uint8_t*)recvbuff + myRank * perRankBytes);
+
   // ====================================================================
   // Phase 4: Self-broadcast (intra-node CE Broadcast of own chunk)
   // ====================================================================
@@ -1087,23 +1145,33 @@ ncclResult_t ncclHierCeAllGather(struct ncclComm* comm, struct ncclKernelPlan* p
     uint8_t* myRecvSlot = (uint8_t*)recvbuff + myRank * perRankBytes;
     size_t offset = myRecvSlot - (uint8_t*)recvWin->userPtr;
 
-    // Out-of-place: copy own data to own recvbuf slot
-    if (myRecvSlot != (const uint8_t*)sendbuff) {
+    if (agUseMulticast) {
+      // Single multicast write covers self + all LSA peers; no self-copy needed.
+      void* mcDstPtr;
+      NCCLCHECKGOTO(ncclDevrGetLsaTeamPtrMC(comm, recvWin, offset, ncclTeamLsa(comm), &mcDstPtr), ret, fail);
       ceBcastOps.srcs[ceBcastOps.numOps] = (void*)sendbuff;
-      ceBcastOps.dsts[ceBcastOps.numOps] = (void*)myRecvSlot;
+      ceBcastOps.dsts[ceBcastOps.numOps] = (void*)mcDstPtr;
       ceBcastOps.sizes[ceBcastOps.numOps] = perRankBytes;
       ceBcastOps.numOps++;
-    }
+    } else {
+      // Out-of-place: copy own data to own recvbuf slot
+      if (myRecvSlot != (const uint8_t*)sendbuff) {
+        ceBcastOps.srcs[ceBcastOps.numOps] = (void*)sendbuff;
+        ceBcastOps.dsts[ceBcastOps.numOps] = (void*)myRecvSlot;
+        ceBcastOps.sizes[ceBcastOps.numOps] = perRankBytes;
+        ceBcastOps.numOps++;
+      }
 
-    // Broadcast to all other LSA peers
-    for (int r = 1; r < lsaSize; r++) {
-      int targetLsaRank = (myLsaRank + r) % lsaSize;
-      void* peerBuf;
-      NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, recvWin, offset, targetLsaRank, &peerBuf), ret, fail);
-      ceBcastOps.srcs[ceBcastOps.numOps] = (void*)sendbuff;
-      ceBcastOps.dsts[ceBcastOps.numOps] = peerBuf;
-      ceBcastOps.sizes[ceBcastOps.numOps] = perRankBytes;
-      ceBcastOps.numOps++;
+      // Broadcast to all other LSA peers
+      for (int r = 1; r < lsaSize; r++) {
+        int targetLsaRank = (myLsaRank + r) % lsaSize;
+        void* peerBuf;
+        NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, recvWin, offset, targetLsaRank, &peerBuf), ret, fail);
+        ceBcastOps.srcs[ceBcastOps.numOps] = (void*)sendbuff;
+        ceBcastOps.dsts[ceBcastOps.numOps] = peerBuf;
+        ceBcastOps.sizes[ceBcastOps.numOps] = perRankBytes;
+        ceBcastOps.numOps++;
+      }
     }
 
     NCCLCHECKGOTO(ncclCeLaunchBatchOps(comm, &ceBcastOps, stream, args), ret, fail);
@@ -1131,14 +1199,25 @@ ncclResult_t ncclHierCeAllGather(struct ncclComm* comm, struct ncclKernelPlan* p
 
         // ----- CE scatter this sub-chunk to all other LSA peers -----
         NCCLCHECKGOTO(ncclCeInitBatchOpsParams(&ceScatterOps, lsaSize), ret, fail);
-        for (int r = 1; r < lsaSize; r++) {
-          int targetLsaRank = (myLsaRank + r) % lsaSize;
-          void* peerBuf;
-          NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, recvWin, winOffset, targetLsaRank, &peerBuf), ret, fail);
+        if (agUseMulticast) {
+          // One multicast write covers all LSA peers (including self, which
+          // already has the data — harmless self-store).
+          void* mcDstPtr;
+          NCCLCHECKGOTO(ncclDevrGetLsaTeamPtrMC(comm, recvWin, winOffset, ncclTeamLsa(comm), &mcDstPtr), ret, fail);
           ceScatterOps.srcs[ceScatterOps.numOps] = chunkSlot;
-          ceScatterOps.dsts[ceScatterOps.numOps] = peerBuf;
+          ceScatterOps.dsts[ceScatterOps.numOps] = (void*)mcDstPtr;
           ceScatterOps.sizes[ceScatterOps.numOps] = subBytes;
           ceScatterOps.numOps++;
+        } else {
+          for (int r = 1; r < lsaSize; r++) {
+            int targetLsaRank = (myLsaRank + r) % lsaSize;
+            void* peerBuf;
+            NCCLCHECKGOTO(ncclDevrGetLsaRankPtr(comm, recvWin, winOffset, targetLsaRank, &peerBuf), ret, fail);
+            ceScatterOps.srcs[ceScatterOps.numOps] = chunkSlot;
+            ceScatterOps.dsts[ceScatterOps.numOps] = peerBuf;
+            ceScatterOps.sizes[ceScatterOps.numOps] = subBytes;
+            ceScatterOps.numOps++;
+          }
         }
 
         NCCLCHECKGOTO(ncclCeLaunchBatchOps(comm, &ceScatterOps, stream, args), ret, fail);

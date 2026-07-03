@@ -1,5 +1,6 @@
 # Tuning sources
 set(TUNING_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/ce_model.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/collnet.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cost_model.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/nvls.cc

@@ -58,6 +58,9 @@ ncclResult_t ncclTuningPatModelSim(struct ncclTuningInput_t* const inputs, struc
 // Symm Kernel Model Wrapper
 ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const inputs, struct ncclTuningResult_t* const tuning);
 
+// CE (Copy Engine) collective model
+ncclResult_t ncclTuningCeModelSim(struct ncclTuningInput_t* const inputs, struct ncclTuningResult_t* const tuning);
+
 // Tuning general
 int ncclTuningGetNsteps(int coll, int nRanks);
 int ncclTuningGetCompCapIndex(struct ncclComm* comm);
