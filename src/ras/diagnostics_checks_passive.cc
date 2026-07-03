@@ -17,6 +17,7 @@
 #include "checks.h"
 #include "comm.h"
 #include "compiler.h"
+#include "cudawrap.h"
 #include "diagnostics.h"
 #include "nvmlwrap.h"
 #include "transport.h"
@@ -362,6 +363,134 @@ ncclResult_t rasDiagnosticsGpuModelSummarize(
             commNRanks, startRank->commId.commHash, rankSet, expectedRank, expectedModel),
           ret, exit);
       }
+    }
+
+    start = end;
+  }
+
+exit:
+  free(records);
+  return ret;
+}
+
+// *************************************************************************
+// CUDA driver version consistency check.
+// *************************************************************************
+#define RAS_DIAG_CUDA_DRIVER_VERSION_UNKNOWN 0
+
+struct rasDiagnosticsCudaDriverVersionData {
+  uint32_t version;
+};
+
+static const char* rasDiagnosticsCudaDriverVersionString(uint32_t version, char* buf, size_t bufLen) {
+  if (version == RAS_DIAG_CUDA_DRIVER_VERSION_UNKNOWN) snprintf(buf, bufLen, "unavailable");
+  else snprintf(buf, bufLen, "%u", version);
+  return buf;
+}
+
+static ncclResult_t rasDiagnosticsCudaDriverVersionFillLocalData(const struct rasDiagnosticsCommSnapshot* comm,
+                                                                 void* checkData) {
+  struct rasDiagnosticsCudaDriverVersionData* versionData = (struct rasDiagnosticsCudaDriverVersionData*)checkData;
+  int version = 0;
+
+  (void)comm;
+  versionData->version = RAS_DIAG_CUDA_DRIVER_VERSION_UNKNOWN;
+  if (ncclCudaDriverVersion(&version) == ncclSuccess && version > 0) {
+    versionData->version = (uint32_t)version;
+  }
+  return ncclSuccess;
+}
+
+ncclResult_t rasDiagnosticsCudaDriverVersionCollectLocal(const struct rasDiagnosticsContext* ctx,
+                                                         struct rasDiagnosticsLocalData* data) {
+  NCCLCHECK(rasDiagnosticsCollectLocalRecords(ctx, sizeof(struct rasDiagnosticsCudaDriverVersionData),
+                                              rasDiagnosticsCudaDriverVersionFillLocalData, data));
+  return ncclSuccess;
+}
+
+static const struct rasDiagnosticsCudaDriverVersionData* rasDiagnosticsCudaDriverVersionDataFromRecord(
+  const char* record) {
+  return (const struct rasDiagnosticsCudaDriverVersionData*)(record + sizeof(struct rasDiagnosticsRankHeader));
+}
+
+ncclResult_t rasDiagnosticsCudaDriverVersionSummarize(
+  const struct rasDiagnosticsContext* ctx, const struct rasDiagnosticsReporter* reporter, const char* data, int nData) {
+  ncclResult_t ret = ncclSuccess;
+  char* records = nullptr;
+  const size_t recordStride = rasDiagnosticsLocalRecordStride(sizeof(struct rasDiagnosticsCudaDriverVersionData));
+  int nRecords;
+
+  (void)ctx;
+
+  if (reporter == nullptr || reporter->emit == nullptr) {
+    WARN("RAS diagnostics CUDA driver version check received invalid reporter");
+    return ncclInternalError;
+  }
+  if (nData == 0) return ncclSuccess;
+  if (data == nullptr) {
+    WARN("RAS diagnostics CUDA driver version check received null data with size %d", nData);
+    return ncclInternalError;
+  }
+  if (nData < 0 || nData % (int)recordStride != 0) {
+    WARN("RAS diagnostics CUDA driver version check received malformed data size %d", nData);
+    return ncclInternalError;
+  }
+
+  nRecords = nData / (int)recordStride;
+  NCCLCHECK(ncclCalloc(&records, nData));
+  memcpy(records, data, nData);
+  qsort(records, nRecords, recordStride, rasDiagnosticsRankHeaderCompare);
+
+  for (int start = 0; start < nRecords;) {
+    const char* startRecord = records + start * recordStride;
+    const struct rasDiagnosticsRankHeader* startRank = rasDiagnosticsRankHeaderFromRecord(startRecord);
+    uint32_t expectedVersion = rasDiagnosticsCudaDriverVersionDataFromRecord(startRecord)->version;
+    int expectedRank = startRank->commRank;
+    int commNRanks = startRank->commNRanks;
+    int mismatchRanks[RAS_DIAG_RANK_SET_MAX];
+    int nMismatchStored = 0, nMismatch = 0;
+    int end = start + 1;
+
+    while (end < nRecords) {
+      const char* record = records + end * recordStride;
+      const struct rasDiagnosticsRankHeader* rank = rasDiagnosticsRankHeaderFromRecord(record);
+      uint32_t version = rasDiagnosticsCudaDriverVersionDataFromRecord(record)->version;
+
+      if (rasDiagnosticsCommIdCompare(&startRank->commId, &rank->commId) != 0) break;
+      if (version != expectedVersion) {
+        if (nMismatchStored < RAS_DIAG_RANK_SET_MAX) mismatchRanks[nMismatchStored++] = rank->commRank;
+        nMismatch++;
+      }
+      end++;
+    }
+
+    if (end - start != commNRanks) {
+      NCCLCHECKGOTO(rasDiagnosticsReportIncomplete(reporter, "CUDA driver version", startRank, end - start), ret, exit);
+    } else if (nMismatch == 0) {
+      char version[32];
+      if (expectedVersion == RAS_DIAG_CUDA_DRIVER_VERSION_UNKNOWN) {
+        NCCLCHECKGOTO(rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                                           "CUDA driver version: unavailable across %d ranks in comm 0x%lx", commNRanks,
+                                           startRank->commId.commHash),
+                      ret, exit);
+      } else {
+        NCCLCHECKGOTO(rasDiagnosticsReport(
+                        reporter, RAS_DIAG_TAG_OK, "CUDA driver version: %s consistent across %d ranks in comm 0x%lx",
+                        rasDiagnosticsCudaDriverVersionString(expectedVersion, version, sizeof(version)), commNRanks,
+                        startRank->commId.commHash),
+                      ret, exit);
+      }
+    } else {
+      char rankSet[128];
+      char version[32];
+      rasDiagnosticsFormatRankSet(rankSet, sizeof(rankSet), mismatchRanks, nMismatchStored, nMismatch);
+      NCCLCHECKGOTO(
+        rasDiagnosticsReport(reporter, RAS_DIAG_TAG_INFO,
+                             "CUDA driver version: mismatch across %d ranks in comm 0x%lx, "
+                             "rank(s) %s differ from rank %d (%s)",
+                             commNRanks, startRank->commId.commHash, rankSet, expectedRank,
+                             rasDiagnosticsCudaDriverVersionString(expectedVersion, version, sizeof(version))),
+        ret, exit);
     }
 
     start = end;

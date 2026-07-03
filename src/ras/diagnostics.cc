@@ -55,6 +55,8 @@ static const struct rasDiagnosticsReporter rasDiagnosticsNoopReporter = {rasDiag
 // to the local collection and summary callbacks for that check.
 static const struct rasDiagnosticsCheck rasDiagnosticsChecks[RAS_DIAG_CHECK_COUNT] = {
   {RAS_DIAG_CHECK_GPU_MODEL, rasDiagnosticsGpuModelCollectLocal, rasDiagnosticsGpuModelSummarize},
+  {RAS_DIAG_CHECK_CUDA_DRIVER_VERSION, rasDiagnosticsCudaDriverVersionCollectLocal,
+   rasDiagnosticsCudaDriverVersionSummarize},
 };
 
 static ncclResult_t rasDiagnosticsSummarizePeerPayloads(
