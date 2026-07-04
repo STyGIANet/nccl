@@ -127,6 +127,12 @@ large message into chunks and put each chunk on a different context. The number 
 saturates the network is platform-dependent; provisioning at least one per local NIC is a reasonable
 starting point.
 
+.. note::
+
+ :c:func:`ncclSignal` and :c:func:`ncclWaitSignal` used without any prior
+ :c:func:`ncclCommWindowRegister` require :c:macro:`rmaEagerInit` (or :ref:`NCCL_RMA_EAGER_INIT`)
+ set to ``1``; otherwise they return ``ncclInvalidUsage``.
+
 Below are a few examples of classic one-sided communication patterns used by parallel applications.
 
 PutSignal and WaitSignal

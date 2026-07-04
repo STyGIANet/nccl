@@ -10,7 +10,26 @@
 #include "alloc.h"
 #include "checks.h"
 #include "comm.h"
+#include "param.h"
+#include "dev_runtime.h"
 #include "rma/rma.h"
+
+NCCL_PARAM(RMADisable, "RMA_DISABLE", 0);
+
+bool ncclRmaProxyEnabled(struct ncclComm* comm) {
+  return !ncclDevrIsOneLsaTeam(comm) && comm->config.numRmaCtx > 0 && comm->globalRmaProxySupport &&
+         !ncclParamRMADisable();
+}
+
+bool ncclRmaInitialized(struct ncclComm* comm) {
+  // Host RMA not supported -> not initialized.
+  if (!comm->hostRmaSupport) return false;
+  // CE is set up for every RMA-capable comm at the first window registration -> not initialized.
+  if (!comm->rmaState.rmaCeState.initialized) return false;
+  // The proxy must be connected only when ncclRmaProxyEnabled -> not initialized.
+  if (ncclRmaProxyEnabled(comm) && !comm->rmaState.rmaProxyState.connected) return false;
+  return true;
+}
 
 static bool isLsaAccessible(struct ncclComm* comm, int rank) {
   for (int i = 0; i < comm->devrState.lsaSize; i++) {

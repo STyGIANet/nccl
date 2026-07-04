@@ -2789,13 +2789,13 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     }
   }
 
-  // Check if RMA CE needs initialization
-  if (!comm->rmaState.rmaCeState.initialized && ncclIntruQueueEmpty(&comm->rmaCeInitTaskQueue)) {
-    struct ncclRmaCeInitTask* ceTask;
-    NCCLCHECK(ncclCalloc(&ceTask, 1));
-    ceTask->comm = comm;
-    ncclIntruQueueEnqueue(&comm->rmaCeInitTaskQueue, ceTask);
-    ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);
+  // ncclSignal / ncclWaitSignal take no window, so they cannot trigger the collective RMA init that
+  // runs at the first window registration. Initializing here for a subset of ranks would deadlock,
+  // so instead require the user to register a symmetric window first or opt into eager init.
+  if ((info->coll == ncclFuncSignal || info->coll == ncclFuncWaitSignal) && !ncclRmaInitialized(comm)) {
+    WARN("ncclSignal/ncclWaitSignal called before RMA is initialized. Register a symmetric window "
+         "first, or set NCCL_RMA_EAGER_INIT=1 to initialize RMA at communicator creation.");
+    return ncclInvalidUsage;
   }
 
   // Must be in thread local group before tasks can be alloc'd in `comm->memScoped`.

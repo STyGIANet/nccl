@@ -354,6 +354,20 @@ ncclConfig_t
   Host one-sided RMA operations such as :c:func:`ncclPutSignal`, :c:func:`ncclSignal`,
   and :c:func:`ncclWaitSignal` use ``sigIdx`` values in the range ``[0, numRmaSig)``.
 
+ .. c:macro:: rmaEagerInit
+
+  (since 2.31)
+
+  Controls when the collective one-sided RMA signal setup is initialized. With
+  ``0`` (default), it is initialized during the first window registration
+  (:c:func:`ncclCommWindowRegister`), a collective point. Use ``1`` to initialize
+  it at communicator-init time instead; this is required if a communicator issues
+  :c:func:`ncclSignal` or :c:func:`ncclWaitSignal` without first registering a
+  window, which otherwise returns ``ncclInvalidUsage``.
+
+  If :ref:`NCCL_RMA_EAGER_INIT` is set in the environment, it overrides this field
+  before initialization.
+
 .. _ncclsiminfo:
 
 ncclSimInfo_t

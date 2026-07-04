@@ -29,7 +29,6 @@ NCCL_PARAM(WinStride, "WIN_STRIDE", -1);
 NCCL_PARAM(EnableVersionCheck, "ENABLE_VERSION_CHECK", 1);
 NCCL_PARAM(ElasticBufferRegister, "ELASTIC_BUFFER_REGISTER", 1);
 NCCL_PARAM(SymReuseSysmemHandles, "SYM_REUSE_SYSMEM_HANDLES", 0);
-NCCL_PARAM(RMADisable, "RMA_DISABLE", 0);
 
 extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v22907, ncclDevCommCompat_v23000,
   ncclDevCommCompat_v23100;
@@ -539,7 +538,9 @@ fail:
 
 static ncclResult_t symMemoryRegisterRma(struct ncclComm* comm, struct ncclDevrMemory* mem) {
   NCCLCHECK(ncclRmaProxyConnectOnce(comm));
-  NCCLCHECK(ncclRmaProxyRegister(comm, mem->primaryAddr, mem->size, mem->rmaHostWins));
+  if (mem->maxGlobalNumSegments == 1) {
+    NCCLCHECK(ncclRmaProxyRegister(comm, mem->primaryAddr, mem->size, mem->rmaHostWins));
+  }
   return ncclSuccess;
 }
 
@@ -627,9 +628,8 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
 
   // ginEnabled is set in ncclDevrCommCreateInternal, which might not be called for RMA proxy
   // so we introduce rmaProxyEnabled to track if RMA proxy is enabled
-  devr->rmaProxyEnabled =
-    devr->nLsaTeams > 1 && comm->config.numRmaCtx > 0 && comm->globalRmaProxySupport && !ncclParamRMADisable();
-  if (devr->rmaProxyEnabled && mem->maxGlobalNumSegments == 1) {
+  devr->rmaProxyEnabled = ncclRmaProxyEnabled(comm);
+  if (devr->rmaProxyEnabled) {
     NCCLCHECKGOTO(symMemoryRegisterRma(comm, mem), ret, fail_mem_space_teams);
   }
 
@@ -1361,6 +1361,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
   ncclResult_t ret = ncclSuccess;
   int saveDev;
   struct ncclDevrRegTask* task;
+  struct ncclRmaCeInitTask* ceTask;
 
   CUDACHECK(cudaGetDevice(&saveDev));
   NCCLCHECK(ncclGroupStartInternal());
@@ -1377,6 +1378,15 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
   task->outWinDev = win;
   ncclIntruQueueEnqueue(&comm->devrState.regTaskQueue, task);
   ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);
+
+  // Initialize RMA CE alongside the first window registration
+  if (comm->hostRmaSupport && !comm->rmaState.rmaCeState.initialized &&
+      ncclIntruQueueEmpty(&comm->rmaCeInitTaskQueue)) {
+    NCCLCHECKGOTO(ncclCalloc(&ceTask, 1), ret, fail);
+    ceTask->comm = comm;
+    ncclIntruQueueEnqueue(&comm->rmaCeInitTaskQueue, ceTask);
+    ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);
+  }
 
 exit:
   ncclGroupErrCheck(ret);

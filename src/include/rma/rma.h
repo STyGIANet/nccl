@@ -36,6 +36,9 @@ static inline size_t ncclRmaSignalOffset(int nRanks, int sigIdx, int rank) {
   return ncclRmaSignalSlot(nRanks, sigIdx, rank) * sizeof(uint64_t);
 }
 
+bool ncclRmaProxyEnabled(struct ncclComm* comm);
+bool ncclRmaInitialized(struct ncclComm* comm);
+
 // Main RMA function declarations
 ncclResult_t scheduleRmaTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan);
 ncclResult_t ncclLaunchRma(struct ncclComm* comm, struct ncclKernelPlan* plan);

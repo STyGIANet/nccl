@@ -1586,6 +1586,25 @@ Value accepted
 ^^^^^^^^^^^^^^
 0 or 1. Default is 1 (enabled).
 
+.. _NCCL_RMA_EAGER_INIT:
+
+NCCL_RMA_EAGER_INIT
+-------------------
+(since 2.31)
+
+Controls when the collective one-sided RMA signal setup is initialized. When set
+to 0 (default), it is initialized at the first :c:func:`ncclCommWindowRegister`.
+Set to 1 to initialize it at communicator-init time instead; this is required if
+the communicator issues :c:func:`ncclSignal` or :c:func:`ncclWaitSignal` without
+first registering a window, which otherwise returns ``ncclInvalidUsage``.
+
+This can also be set per communicator with the :c:macro:`rmaEagerInit` field in
+:ref:`ncclconfig`; the environment variable takes precedence when set.
+
+Value accepted
+^^^^^^^^^^^^^^
+0 or 1. Default is 0 (init at first window registration).
+
 NCCL_DMABUF_ENABLE
 ------------------
 (since 2.13)

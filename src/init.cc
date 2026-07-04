@@ -65,6 +65,7 @@ NCCL_PARAM(WinEnable, "WIN_ENABLE", 1);
 NCCL_PARAM(CollnetEnable, "COLLNET_ENABLE", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(NvlsChannels, "NVLS_NCHANNELS", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(NumRmaCtx, "NUM_RMA_CTX", NCCL_CONFIG_UNDEF_INT);
+NCCL_PARAM(RmaEagerInit, "RMA_EAGER_INIT", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(MaxP2pPeers, "P2P_MAX_PEERS", NCCL_CONFIG_UNDEF_INT);
 NCCL_PARAM(SetCpuStackSize, "SET_CPU_STACK_SIZE", 1);
 NCCL_PARAM(MultiRankGpuEnable, "MULTI_RANK_GPU_ENABLE", 0);
@@ -1740,6 +1741,16 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   // After devCommSetup so the host-pinned workStarted/workCompleted buffers exist.
   NCCLCHECKGOTO(ncclProfilerThreadCreate(comm, parent), ret, fail);
 
+  // Eagerly initialize RMA signal setup at comm-init when opted in via NCCL_RMA_EAGER_INIT / config.rmaEagerInit.
+  if (comm->config.rmaEagerInit) {
+    if (comm->hostRmaSupport) {
+      NCCLCHECKGOTO(ncclRmaCeInit(comm), ret, fail);
+    }
+    if (ncclRmaProxyEnabled(comm)) {
+      NCCLCHECKGOTO(ncclRmaProxyConnectOnce(comm), ret, fail);
+    }
+  }
+
   timers[TIMER_INIT_CONNECT] = clockNano() - timers[TIMER_INIT_CONNECT];
   /* Local intra-node barrier */
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks,
@@ -2043,6 +2054,7 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   int graphStreamOrderingEnv;
   int launchOrderImplicitEnv;
   int numRmaCtxEnv;
+  int rmaEagerInitEnv;
   int maxP2pPeersEnv;
   const char* checkModeEnv;
 
@@ -2136,6 +2148,16 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
     } else {
       if (numRmaCtxEnv == 0) INFO(NCCL_ENV, "NCCL_NUM_RMA_CTX=0, RMA disabled for this communicator");
       comm->config.numRmaCtx = numRmaCtxEnv;
+    }
+  }
+
+  rmaEagerInitEnv = ncclParamRmaEagerInit();
+  if (rmaEagerInitEnv != NCCL_CONFIG_UNDEF_INT) {
+    if (rmaEagerInitEnv != 0 && rmaEagerInitEnv != 1) {
+      INFO(NCCL_ENV, "NCCL_RMA_EAGER_INIT %d is not valid, leaving it set at %d", rmaEagerInitEnv,
+           comm->config.rmaEagerInit);
+    } else {
+      comm->config.rmaEagerInit = rmaEagerInitEnv;
     }
   }
 
@@ -2377,6 +2399,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
     if (internalConfigPtr->version < NCCL_VERSION(2, 31, 0)) {
       internalConfigPtr->launchOrderImplicit = defaultConfig.launchOrderImplicit;
       internalConfigPtr->numRmaSig = defaultConfig.numRmaSig;
+      internalConfigPtr->rmaEagerInit = defaultConfig.rmaEagerInit;
     }
   }
 
@@ -2492,6 +2515,13 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
     goto fail;
   }
 
+  if (internalConfigPtr->rmaEagerInit != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->rmaEagerInit != 0 &&
+      internalConfigPtr->rmaEagerInit != 1) {
+    WARN("Invalid config rmaEagerInit attribute value %d", internalConfigPtr->rmaEagerInit);
+    ret = ncclInvalidArgument;
+    goto fail;
+  }
+
   /* default config value can be tuned on different platform. */
   NCCL_CONFIG_DEFAULT(internalConfigPtr, blocking, NCCL_CONFIG_UNDEF_INT, 1, "Blocking", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, cgaClusterSize, NCCL_CONFIG_UNDEF_INT, 4, "CGA cluster size", "%d");
@@ -2519,6 +2549,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   NCCL_CONFIG_DEFAULT(internalConfigPtr, launchOrderImplicit, NCCL_CONFIG_UNDEF_INT, NCCL_CONFIG_UNDEF_INT,
                       "launchOrderImplicit", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, numRmaSig, NCCL_CONFIG_UNDEF_INT, 1, "numRmaSig", "%d");
+  NCCL_CONFIG_DEFAULT(internalConfigPtr, rmaEagerInit, NCCL_CONFIG_UNDEF_INT, 0, "rmaEagerInit", "%d");
 
   /* assign config to communicator */
   comm->config.blocking = internalConfigPtr->blocking;
@@ -2541,10 +2572,14 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   comm->config.graphStreamOrdering = internalConfigPtr->graphStreamOrdering;
   comm->config.launchOrderImplicit = internalConfigPtr->launchOrderImplicit;
   comm->config.numRmaSig = internalConfigPtr->numRmaSig;
+  comm->config.rmaEagerInit = internalConfigPtr->rmaEagerInit;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
   // Resolve to system default (serialize) if neither user config nor env var set it.
   if (comm->config.graphStreamOrdering == NCCL_CONFIG_UNDEF_INT) comm->config.graphStreamOrdering = 1;
+
+  // Resolve to default (lazy init) if neither user config nor env var set it.
+  if (comm->config.rmaEagerInit == NCCL_CONFIG_UNDEF_INT) comm->config.rmaEagerInit = 0;
 
   // Warn and fall back when graphStreamOrdering=0 is combined with graphUsageMode=2 (unsupported).
   if (comm->config.graphStreamOrdering == 0 && comm->config.graphUsageMode == 2) {
