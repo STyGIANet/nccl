@@ -104,10 +104,12 @@ bool ncclSymkTmaDeepEligible(struct ncclComm* comm, ncclSymkKernelId k, size_t n
     chunkMod = nBlocks;
     break;
   case ncclSymkKernelId_AllGather_TmaSTMC:
-  case ncclSymkKernelId_AllGather_STMC:
     bytePerChunk = ncclSymkMultimemDeepBytePerChunk;
     chunkMod = 1;
     break;
+  default:
+    WARN("Unexpected kernel id %d in ncclSymkTmaDeepEligible", (int)k);
+    return false;
   }
   if (bytePerChunk == 0 || chunkMod == 0) return false;
   return nBytes >= (size_t)bytePerChunk * (size_t)chunkMod;

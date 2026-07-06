@@ -509,7 +509,6 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
   TIME_START(1);
   for (int i = 0; i < nqps; i++) {
     ncclIbQp* qp = qps[i];
-    int qpIndex = qpIndexes[i];
     ncclIbAddEvent(req, qp->devIndex);
     if (comm->prepostReceiveWorkRequests) {
       continue;
@@ -519,6 +518,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
     NCCLCHECK(ncclIbPostRecvWorkRequest(qp->qp, &comm->ibRecvWorkRequest));
 #ifdef NCCL_ENABLE_NET_PROFILING
     // Start a QP event for every request in the multirecv and every qp
+    int qpIndex = qpIndexes[i];
     for (int r = 0; r < n; r++) {
       int nEventHandles = req->pInfo[r].nEventHandles;
       req->pInfo[r].qpIndex[nEventHandles] = qpIndex;

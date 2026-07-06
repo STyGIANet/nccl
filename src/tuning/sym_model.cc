@@ -346,8 +346,8 @@ ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const inputs, stru
     return ncclSuccess;
   }
 
-  float kTime;
-  int kBlocks;
+  float kTime = 0.0f;
+  int kBlocks = 0;
   constexpr float smPenalty = .025f; // 2.5% percent increase in time per SM
   queryModel(inputs->comm, (ncclSymkKernelId)tuning->symKernelId, inputs->nBytes, &kTime, &kBlocks);
 
