@@ -1,26 +1,27 @@
 """Pythonic wrappers for ``ncclDevComm``, ``ncclWindow``, and ``ncclTeam``.
 
-Wrap a kernel-arg integer pointer with :class:`DevComm` or :class:`Window`
-at kernel entry::
-
-    dev_comm = nccl_cute.DevComm(dev_comm)
-    win = nccl_cute.Window(win)
-
-:class:`DevComm` queries are properties (``dev_comm.rank``,
-``dev_comm.team_world``, ...). :class:`Window` exposes pointer
-translations (``win.local_pointer`` / ``lsa_pointer`` / ``peer_pointer``)
-plus :meth:`Window.tensor`, which returns a ``cute.Tensor`` view over the
-registered buffer — the canonical input to :meth:`Gin.put`.
+:class:`DevComm` is an explicit CuTeDSL view over a host-side
+``DevCommResource``. Its JIT protocol passes a :py:class:`DevCommValue`
+native struct by value and reconstructs the same public type in value mode
+while tracing. Pointer storage is materialized lazily for device APIs whose
+FFI ABI requires a pointer or reference. :class:`Window` remains a pointer
+wrapper and exposes pointer translations (``win.local_pointer`` /
+``lsa_pointer`` / ``peer_pointer``) plus :meth:`Window.tensor`, which
+returns a ``cute.Tensor`` view over the registered buffer — the canonical
+input to :meth:`Gin.put`.
 """
 
 import cutlass
 import cutlass.cute as cute
 from cutlass._mlir import ir
+from cutlass._mlir.dialects import llvm
 from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
 
+from ...resources import DevCommResource
 from . import _bindings as raw
 from ._helpers import _to_ptr
 from ._structs import (
+    DevCommValue,
     _LLVMPtrType,
     ncclTeam as Team,
     ncclLsaBarrierHandle,
@@ -62,61 +63,130 @@ def _ptr_wrapper(cls):
     return cls
 
 
-@_ptr_wrapper
-@cute.native_struct
-class DevComm:
-    """Pointer wrapper for ``ncclDevComm``.
+def _device_function_entry_block():
+    """Return the enclosing device function's entry block."""
+    op = ir.InsertionPoint.current.block.owner
+    while op is not None:
+        parent = op.parent
+        if parent is not None and parent.name == "gpu.module":
+            if len(op.regions) == 0 or len(op.regions[0].blocks) == 0:
+                break
+            return op.regions[0].blocks[0]
+        op = parent
+    raise cutlass.DSLRuntimeError(
+        "Unable to find the device function entry block for DevComm.ptr"
+    )
 
-    Construct with ``DevComm(<integer kernel arg>)``; the integer is
-    converted to ``!llvm.ptr`` via :func:`_helpers._to_ptr` before being
-    stored in the struct.
+
+@dsl_user_op
+def _materialize_dev_comm(value, *, loc=None, ip=None) -> ir.Value:
+    """Materialize a by-value DevComm in the device function entry block."""
+    entry_block = _device_function_entry_block()
+    struct_value = value.__extract_mlir_values__()[0]
+    with ir.InsertionPoint.at_block_begin(entry_block):
+        ptr = llvm.alloca(
+            res=ir.Type.parse("!llvm.ptr"),
+            array_size=cutlass.Int32(1).ir_value(),
+            elem_type=DevCommValue._struct_type,
+            alignment=8,
+            loc=loc,
+        )
+        llvm.store(struct_value, ptr, loc=loc)
+    return ptr
+
+
+class DevComm:
+    """CuTeDSL view over a host-owned, by-value ``ncclDevComm``.
+
+    ``DevComm(resource)`` creates a host-mode JIT argument that keeps the
+    resource alive. CuTeDSL reconstructs value-mode instances without calling
+    ``__init__``. The native struct is exposed as ``value`` for field reads
+    while tracing; mutating it is unsupported. ``ptr`` is materialized once,
+    on demand, and is never included in the JIT or kernel ABI.
     """
 
-    ptr: _LLVMPtrType
+    def __init__(self, resource: DevCommResource):
+        if not isinstance(resource, DevCommResource):
+            raise TypeError(
+                "DevComm expects an nccl.core.DevCommResource, "
+                f"got {type(resource).__name__}"
+        )
+        self._resource = resource
+        self.value = None
+        self._materialized_ptr = None
+
+    def __c_pointers__(self):
+        if self._resource is None:
+            raise cutlass.DSLRuntimeError(
+                "DevComm.__c_pointers__ is only available on a host-mode "
+                "DevComm"
+            )
+        return [self._resource.dev_comm.ptr]
+
+    @staticmethod
+    def __get_mlir_types__():
+        return DevCommValue.__get_mlir_types__()
+
+    def __extract_mlir_values__(self):
+        return self.value.__extract_mlir_values__()
+
+    def __new_from_mlir_values__(self, values):
+        obj = object.__new__(type(self))
+        obj._resource = None
+        obj.value = DevCommValue(values[0])
+        obj._materialized_ptr = None
+        return obj
+
+    @property
+    def ptr(self) -> ir.Value:
+        """Device-local pointer to this value, materialized on first use."""
+        if self._materialized_ptr is None:
+            self._materialized_ptr = _materialize_dev_comm(self.value)
+        return self._materialized_ptr
 
     # === Scalar fields ===
 
     @property
     def rank(self) -> cutlass.Int32:
-        return raw.ncclDevComm_Rank(self.ptr)
+        return self.value.rank
 
     @property
     def n_ranks(self) -> cutlass.Int32:
-        return raw.ncclDevComm_NRanks(self.ptr)
+        return self.value.n_ranks
 
     @property
     def lsa_rank(self) -> cutlass.Int32:
-        return raw.ncclDevComm_LsaRank(self.ptr)
+        return self.value.lsa_rank
 
     @property
     def lsa_size(self) -> cutlass.Int32:
-        return raw.ncclDevComm_LsaSize(self.ptr)
+        return self.value.lsa_size
 
     # === Embedded barrier handles ===
 
     @property
     def lsa_barrier(self) -> ncclLsaBarrierHandle:
-        return raw.ncclDevComm_LsaBarrier(self.ptr)
+        return self.value.lsa_barrier
 
     @property
     def rail_gin_barrier(self) -> ncclGinBarrierHandle:
-        return raw.ncclDevComm_RailGinBarrier(self.ptr)
+        return self.value.rail_gin_barrier
 
     @property
     def hybrid_lsa_barrier(self) -> ncclLsaBarrierHandle:
-        return raw.ncclDevComm_HybridLsaBarrier(self.ptr)
+        return self.value.hybrid_lsa_barrier
 
     @property
     def hybrid_rail_gin_barrier(self) -> ncclGinBarrierHandle:
-        return raw.ncclDevComm_HybridRailGinBarrier(self.ptr)
+        return self.value.hybrid_rail_gin_barrier
 
     @property
     def world_gin_barrier(self) -> ncclGinBarrierHandle:
-        return raw.ncclDevComm_WorldGinBarrier(self.ptr)
+        return self.value.world_gin_barrier
 
     @property
     def lsa_multimem(self) -> ncclMultimemHandle:
-        return raw.ncclDevComm_LsaMultimem(self.ptr)
+        return self.value.lsa_multimem
 
     # === Team factories ===
 
@@ -225,5 +295,6 @@ class Window:
 __all__ = [
     "Team",
     "DevComm",
+    "DevCommValue",
     "Window",
 ]

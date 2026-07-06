@@ -76,7 +76,7 @@ def _to_ptr(x, *, loc=None, ip=None):
         x: accepted forms —
 
             * ``!llvm.ptr`` ir.Value — passthrough.
-            * ``@cute.native_struct`` with a ``!llvm.ptr`` ``.ptr`` field
+            * object exposing a ``!llvm.ptr`` ``.ptr`` property
               (``DevComm``, ``Window``, ``Gin``, ``Coop``) — extract.
             * cutlass numeric (has ``.ir_value()``) — ``inttoptr``.
             * integer ``ir.Value`` — ``inttoptr``.
@@ -88,7 +88,7 @@ def _to_ptr(x, *, loc=None, ip=None):
     ptr_type = ir.Type.parse("!llvm.ptr")
     if isinstance(x, ir.Value) and x.type == ptr_type:
         return x
-    # @cute.native_struct wrapper around a ptr field.
+    # Wrapper or facade exposing a ptr field/property.
     if hasattr(x, "ptr"):
         inner = x.ptr
         if isinstance(inner, ir.Value) and inner.type == ptr_type:

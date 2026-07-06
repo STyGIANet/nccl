@@ -37,6 +37,17 @@ def _array_i8(n: int):
     return T
 
 
+def _array_ptr(n: int):
+    """Build a fixed-size opaque-pointer array type."""
+
+    class T:
+        @staticmethod
+        def mlir_type():
+            return ir.Type.parse(f"!llvm.array<{n} x ptr>")
+
+    return T
+
+
 # === Native structs ===
 
 @cute.native_struct
@@ -73,6 +84,66 @@ class ncclMultimemHandle:
     (src/include/nccl_device/impl/core__types.h)."""
 
     mcBasePtr: _LLVMPtrType
+
+
+@cute.native_struct
+class ncclResourceWindow_vidmem:
+    """``ncclResourceWindow_vidmem_t`` from ``impl/core__types.h``."""
+
+    reserved1: _array_i8(8)
+    lsa_flat_base: _LLVMPtrType
+    reserved2: _array_i8(8)
+    stride4g: cutlass.Uint32
+    mc_offset4k: cutlass.Uint32
+    reserved3: _array_i8(32)
+
+
+@cute.native_struct
+class DevCommValue:
+    """By-value ABI mirror of ``struct ncclDevComm``.
+
+    Field order and types must stay synchronized with
+    ``nccl_device_expanded.h`` used to generate the low-level bindings. The
+    unpacked LLVM struct supplies the same natural padding as the C structure.
+    """
+
+    magic: cutlass.Uint32
+    version: cutlass.Uint32
+
+    rank: cutlass.Int32
+    n_ranks: cutlass.Int32
+    n_ranks_rcp32: cutlass.Uint32
+    lsa_rank: cutlass.Int32
+    lsa_size: cutlass.Int32
+    lsa_size_rcp32: cutlass.Uint32
+
+    window_table: _LLVMPtrType
+    resource_window: _LLVMPtrType
+    resource_window_inlined: ncclResourceWindow_vidmem
+
+    hybrid_world_gin_barrier: ncclGinBarrierHandle
+
+    lsa_multimem: ncclMultimemHandle
+    lsa_barrier: ncclLsaBarrierHandle
+    rail_gin_barrier: ncclGinBarrierHandle
+
+    gin_connection_count: cutlass.Uint8
+    gin_net_device_types: _array_i8(4)
+    gin_handles: _array_ptr(4)
+    gin_signal_count: cutlass.Int32
+    gin_counter_count: cutlass.Int32
+    gin_signal_shadows: _LLVMPtrType
+    gin_context_count: cutlass.Uint32
+    gin_connections_railed: cutlass.Uint8
+    gin_strong_legacy_signals: cutlass.Uint8
+    gin_contexts_railed: cutlass.Uint8
+
+    abort_flag: _LLVMPtrType
+
+    hybrid_lsa_barrier: ncclLsaBarrierHandle
+    hybrid_rail_gin_barrier: ncclGinBarrierHandle
+
+    world_gin_barrier: ncclGinBarrierHandle
 
 
 @cute.native_struct

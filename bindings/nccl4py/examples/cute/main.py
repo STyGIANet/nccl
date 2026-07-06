@@ -43,7 +43,11 @@ DST_RANK = 1
 SIGNAL_ID = 1
 
 @cute.kernel
-def test_nccl_put_kernel(dev_comm, send_win, recv_win):
+def test_nccl_put_kernel(
+    dev_comm: nccl_cute.DevComm,
+    send_win,
+    recv_win,
+):
     """Issue a 1 MiB GIN put from rank 0 to rank 1 via ``cute.Tensor`` views.
 
     Runs with exactly 2 ranks. Two separate windows make the data flow
@@ -59,15 +63,15 @@ def test_nccl_put_kernel(dev_comm, send_win, recv_win):
     unused.
 
     Args:
-        dev_comm: Integer pointer to the ``ncclDevComm`` (host-side
-            ``dev_comm.ptr``).
+        dev_comm: Value-mode
+            :py:class:`~nccl.core.device.cute.DevComm` reconstructed while
+            tracing from the host-mode instance.
         send_win: Integer handle of the registered source window
             (host-side ``send_win.handle``).
         recv_win: Integer handle of the registered destination window
             (host-side ``recv_win.handle``).
     """
     tidx, _, _ = cute.arch.thread_idx()
-    dev_comm = nccl_cute.DevComm(dev_comm)
     send_win = nccl_cute.Window(send_win)
     recv_win = nccl_cute.Window(recv_win)
     team = dev_comm.team_world
@@ -100,41 +104,20 @@ def test_nccl_put_kernel(dev_comm, send_win, recv_win):
 
 
 @cute.jit
-def test_nccl_put(dev_comm: cutlass.Int64,
-                  send_win: cutlass.Int64,
-                  recv_win: cutlass.Int64):
-    """Launch :func:`test_nccl_put_kernel` with a single-warp grid.
+def test_nccl_put(
+    dev_comm: nccl_cute.DevComm,
+    send_win: cutlass.Int64,
+    recv_win: cutlass.Int64,
+):
+    """Launch :py:func:`test_nccl_put_kernel` with a single-warp grid.
 
-    A ``@cute.jit`` function can be invoked in two ways:
-
-    1. One-step direct call (used by :func:`main` below)::
-
-           test_nccl_put(dev_comm.ptr, send_win.handle, recv_win.handle)
-
-       Args must be primitives the DSL marshals (``int`` / ``float`` /
-       ``bool`` have built-in adapters) or types that implement the
-       ``JitArgument`` protocol. The ``cutlass.Int64`` annotations on
-       the parameters are load-bearing — the default ``int`` adapter
-       demotes to ``Int32``, which truncates pointer addresses above
-       4 GB.
-
-    2. Two-step compile-then-call::
-
-           compiled = cute.compile(test_nccl_put, dev_comm, send_win, recv_win)
-           compiled(dev_comm, send_win, recv_win)
-
-       ``cute.compile`` sets ``compile_only=True``, bypassing the strict
-       marshaling check, so the args can be arbitrary Python objects
-       (e.g. ``DevCommResource`` / ``RegisteredWindowHandle`` wrappers
-       themselves). The body runs once to trace IR and reads ``.ptr`` /
-       ``.handle`` at trace time; the returned executor replays that
-       attribute extraction on each call.
-
-    Use (1) when you can pass primitives at the boundary; use (2) when
-    you'd rather hand the function the raw resource objects.
+    The host-mode :py:class:`~nccl.core.device.cute.DevComm` reads its
+    resource-owned :c:type:`ncclDevComm_t <ncclDevComm>` as an aggregate JIT
+    argument. CuTeDSL reconstructs the same type in value mode for this body
+    and the kernel.
 
     Args:
-        dev_comm: Integer pointer to the ``ncclDevComm``.
+        dev_comm: CuTeDSL view of an NCCL device communicator.
         send_win: Integer handle of the source window.
         recv_win: Integer handle of the destination window.
     """
@@ -190,11 +173,12 @@ def main():
         gin_connection_type=nccl.NcclGinConnectionType.FULL,
         gin_signal_count=SIGNAL_ID + 1,
     )
-    dev_comm = nccl_comm.create_dev_comm(requirements=reqs)
-    assert dev_comm.is_valid
-    assert dev_comm.ptr != 0
+    dev_comm_resource = nccl_comm.create_dev_comm(requirements=reqs)
+    assert dev_comm_resource.is_valid
+    assert dev_comm_resource.ptr != 0
+    dev_comm = nccl_cute.DevComm(dev_comm_resource)
 
-    test_nccl_put(dev_comm.ptr, send_win.handle, recv_win.handle)
+    test_nccl_put(dev_comm, send_win.handle, recv_win.handle)
 
     device.sync()
 
@@ -207,7 +191,7 @@ def main():
         else:
             print(f"[rank {rank}] [ERROR] {mismatches} / {NUM_ELEMS} mismatches")
 
-    dev_comm.close()
+    dev_comm_resource.close()
     send_win.close()
     recv_win.close()
     nccl_comm.destroy()
