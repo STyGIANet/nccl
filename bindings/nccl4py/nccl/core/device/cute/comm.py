@@ -219,6 +219,12 @@ class DevComm:
         return Gin(ptr=storage)
 
 
+@cutlass.register_jit_arg_adapter(DevCommResource)
+def _adapt_dev_comm_resource(resource: DevCommResource) -> DevComm:
+    """Adapt a device communicator resource to a CuTeDSL view."""
+    return DevComm(resource)
+
+
 @_ptr_wrapper
 @cute.native_struct
 class Window:
