@@ -1,31 +1,6 @@
 """User-facing CuTeDSL bindings for the NCCL device API.
 
-Typical usage::
-
-    import cutlass
-    import cutlass.cute as cute
-    import nccl.core.device.cute as nccl_cute
-
-    @cute.kernel
-    def my_kernel(dev_comm: nccl_cute.DevComm, win: nccl_cute.Window):
-        team = dev_comm.team_world
-        coop = nccl_cute.cta()
-        gin = dev_comm.gin(nccl_cute.GinBackendMask.ALL, 0)
-
-        src = win.tensor(cutlass.Int64, cute.make_layout(1))
-        dst = win.tensor(cutlass.Int64, cute.make_layout(1))
-        src[0] = 1234
-        gin.put(team, peer, win, dst, win, src, coop,
-                is_signal=True, signal_id=1)
-        ...
-
-    @cute.jit
-    def launch(dev_comm: nccl_cute.DevComm, win):
-        my_kernel(dev_comm, win).launch(grid=[1, 1, 1], block=[32, 1, 1])
-
-    resource = nccl_comm.create_dev_comm(requirements=reqs)
-    dev_comm = nccl_cute.DevComm(resource)
-    launch(dev_comm, win)
+See ``examples/cute/main.py`` for a complete, runnable example.
 """
 
 try:
@@ -41,7 +16,7 @@ except ImportError as e:
 from . import types, coop, comm, window, gin, barrier
 from .types import *    # MemoryOrder, GinFenceLevel, GinBackendMask
 from .coop import *     # Coop, cta, warp, thread, lanes, warp_span
-from .comm import *     # Team, DevComm, DevCommValue
+from .comm import *     # Team, DevComm
 from .window import *   # Window
 from .gin import *      # Gin
 from .barrier import *  # session classes + factories

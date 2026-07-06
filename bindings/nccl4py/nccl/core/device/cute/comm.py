@@ -72,9 +72,9 @@ class DevComm:
             raise TypeError(
                 "DevComm expects an nccl.core.DevCommResource, "
                 f"got {type(resource).__name__}"
-        )
+            )
         self._resource = resource
-        self.value = None
+        self._value = None
         self._materialized_ptr = None
 
     def __c_pointers__(self):
@@ -95,9 +95,18 @@ class DevComm:
     def __new_from_mlir_values__(self, values):
         obj = object.__new__(type(self))
         obj._resource = None
-        obj.value = DevCommValue(values[0])
+        obj._value = DevCommValue(values[0])
         obj._materialized_ptr = None
         return obj
+
+    @property
+    def value(self) -> DevCommValue:
+        """Value-mode native struct backing the field reads."""
+        if self._value is None:
+            raise cutlass.DSLRuntimeError(
+                "DevComm fields are only available while tracing CuTeDSL code"
+            )
+        return self._value
 
     @property
     def ptr(self) -> ir.Value:
@@ -190,5 +199,4 @@ def _adapt_dev_comm_resource(resource: DevCommResource) -> DevComm:
 __all__ = [
     "Team",
     "DevComm",
-    "DevCommValue",
 ]

@@ -83,9 +83,7 @@ NCCL_IR_EXTERN_C __device__ size_t ncclBarrierSession_C_size();
 
 /* ncclDevComm field accessors
  *
- * ncclDevComm is a public C struct, but its full layout (~200 bytes with
- * embedded arrays and structs) is not mirrored in Python. The Python device
- * layer reads its public fields through these accessor functions.
+ * ncclDevComm is a public C struct, the following accessors are deprecated and will be removed.
  */
 NCCL_IR_EXTERN_C __device__ int                  ncclDevComm_Rank(ncclDevComm const* comm);
 NCCL_IR_EXTERN_C __device__ int                  ncclDevComm_NRanks(ncclDevComm const* comm);
