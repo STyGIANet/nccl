@@ -14,14 +14,16 @@ from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
 
 from ...resources import DevCommResource
 from . import _bindings as raw
+from ._helpers import _alloca_struct
 from ._structs import (
     DevCommValue,
+    ncclGin_C,
     ncclTeam as Team,
     ncclLsaBarrierHandle,
     ncclGinBarrierHandle,
     ncclMultimemHandle,
 )
-from .gin import Gin, _alloca_ncclGin_C
+from .gin import Gin
 from .types import GinBackendMask
 
 
@@ -45,14 +47,10 @@ def _materialize_dev_comm(value, *, loc=None, ip=None) -> ir.Value:
     """Materialize a by-value DevComm in the device function entry block."""
     entry_block = _device_function_entry_block()
     struct_value = value.__extract_mlir_values__()[0]
+    # ip is not forwarded: the alloca/store must land at entry-block begin
+    # so the pointer dominates every use, not at the caller's position.
     with ir.InsertionPoint.at_block_begin(entry_block):
-        ptr = llvm.alloca(
-            res=ir.Type.parse("!llvm.ptr"),
-            array_size=cutlass.Int32(1).ir_value(),
-            elem_type=DevCommValue._struct_type,
-            alignment=8,
-            loc=loc,
-        )
+        ptr = _alloca_struct(DevCommValue, alignment=8, loc=loc)
         llvm.store(struct_value, ptr, loc=loc)
     return ptr
 
@@ -185,7 +183,7 @@ class DevComm:
         Returns:
             Initialized :class:`Gin`.
         """
-        storage = _alloca_ncclGin_C()
+        storage = _alloca_struct(ncclGin_C)
         raw.ncclGin_C_init(storage, backend, self, context_id)
         return Gin(ptr=storage)
 

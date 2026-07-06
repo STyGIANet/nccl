@@ -15,28 +15,10 @@ By-value FFI signatures (e.g. :meth:`Gin.put`,
 
 import cutlass
 import cutlass.cute as cute
-from cutlass._mlir import ir
-from cutlass._mlir.dialects import llvm
-from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
 
 from . import _bindings as raw
+from ._helpers import _alloca_struct
 from ._structs import _LLVMPtrType, ncclCoopAny
-
-
-@dsl_user_op
-def _alloca_coop(*, loc=None, ip=None):
-    """Alloca uninitialized ``ncclCoopAny`` storage on the kernel stack.
-
-    Returns:
-        ``!llvm.ptr`` ir.Value to the storage.
-    """
-    return llvm.alloca(
-        res=ir.Type.parse("!llvm.ptr"),
-        array_size=cutlass.Int32(1).ir_value(),
-        elem_type=ncclCoopAny._struct_type,
-        loc=loc,
-        ip=ip,
-    )
 
 
 @cute.native_struct
@@ -80,7 +62,7 @@ def cta() -> Coop:
     Returns:
         :class:`Coop`.
     """
-    ptr = _alloca_coop()
+    ptr = _alloca_struct(ncclCoopAny)
     raw.ncclCoopAnyInitCta(ptr)
     return Coop(ptr=ptr)
 
@@ -91,7 +73,7 @@ def warp() -> Coop:
     Returns:
         :class:`Coop`.
     """
-    ptr = _alloca_coop()
+    ptr = _alloca_struct(ncclCoopAny)
     raw.ncclCoopAnyInitWarp(ptr)
     return Coop(ptr=ptr)
 
@@ -102,7 +84,7 @@ def thread() -> Coop:
     Returns:
         :class:`Coop`.
     """
-    ptr = _alloca_coop()
+    ptr = _alloca_struct(ncclCoopAny)
     raw.ncclCoopAnyInitThread(ptr)
     return Coop(ptr=ptr)
 
@@ -116,7 +98,7 @@ def lanes(lane_mask: int) -> Coop:
     Returns:
         :class:`Coop`.
     """
-    ptr = _alloca_coop()
+    ptr = _alloca_struct(ncclCoopAny)
     raw.ncclCoopAnyInitLanes(ptr, lane_mask)
     return Coop(ptr=ptr)
 
@@ -132,7 +114,7 @@ def warp_span(warp0: int, n_warps: int, id: int) -> Coop:
     Returns:
         :class:`Coop`.
     """
-    ptr = _alloca_coop()
+    ptr = _alloca_struct(ncclCoopAny)
     raw.ncclCoopAnyInitWarpSpan(ptr, warp0, n_warps, id)
     return Coop(ptr=ptr)
 

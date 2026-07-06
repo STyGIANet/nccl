@@ -1,9 +1,9 @@
 """Hand-written internal utilities for the CuTeDSL bindings.
 
 Holds the bitcode resolver, the module-level ``BitCode`` cache, the
-``_ffi`` factory that injects ``source=_BC`` into every prototype, and
-the ``_to_ptr`` / ``_to_coop_value`` coercion helpers used by
-:mod:`_bindings`.
+``_ffi`` factory that injects ``source=_BC`` into every prototype, the
+``_alloca_struct`` stack-storage helper, and the ``_to_ptr`` /
+``_to_coop_value`` coercion helpers used by :mod:`_bindings`.
 """
 
 import os
@@ -48,6 +48,27 @@ def device_bitcode_path() -> str:
 
 
 _BC = BitCode(device_bitcode_path())
+
+
+@dsl_user_op
+def _alloca_struct(struct_cls, *, alignment=None, loc=None, ip=None) -> ir.Value:
+    """Alloca uninitialized storage for a native struct on the kernel stack.
+
+    Args:
+        struct_cls: ``@cute.native_struct`` class supplying ``_struct_type``.
+        alignment: explicit alignment in bytes; natural if ``None``.
+
+    Returns:
+        ``!llvm.ptr`` ir.Value to the storage.
+    """
+    return llvm.alloca(
+        res=ir.Type.parse("!llvm.ptr"),
+        array_size=cutlass.Int32(1).ir_value(),
+        elem_type=struct_cls._struct_type,
+        alignment=alignment,
+        loc=loc,
+        ip=ip,
+    )
 
 
 def _ffi(**kw):

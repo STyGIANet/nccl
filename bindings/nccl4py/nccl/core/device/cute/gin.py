@@ -12,28 +12,11 @@ Construct via :meth:`DevComm.gin`::
 
 import cutlass
 import cutlass.cute as cute
-from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm
 from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
 
 from . import _bindings as raw
 from ._structs import _LLVMPtrType, ncclGin_C, ncclTeam, ncclCoopAny
-
-
-@dsl_user_op
-def _alloca_ncclGin_C(*, loc=None, ip=None) -> ir.Value:
-    """Alloca uninitialized ``ncclGin_C`` storage on the kernel stack.
-
-    Returns:
-        ``!llvm.ptr`` ir.Value to the storage.
-    """
-    return llvm.alloca(
-        res=ir.Type.parse("!llvm.ptr"),
-        array_size=cutlass.Int32(1).ir_value(),
-        elem_type=ncclGin_C._struct_type,
-        loc=loc,
-        ip=ip,
-    )
 
 
 @cute.native_struct
