@@ -45,8 +45,8 @@ SIGNAL_ID = 1
 @cute.kernel
 def test_nccl_put_kernel(
     dev_comm: nccl_cute.DevComm,
-    send_win,
-    recv_win,
+    send_win: nccl_cute.Window,
+    recv_win: nccl_cute.Window,
 ):
     """Issue a 1 MiB GIN put from rank 0 to rank 1 via ``cute.Tensor`` views.
 
@@ -66,14 +66,10 @@ def test_nccl_put_kernel(
         dev_comm: Value-mode
             :py:class:`~nccl.core.device.cute.DevComm` reconstructed while
             tracing from the host-mode instance.
-        send_win: Integer handle of the registered source window
-            (host-side ``send_win.handle``).
-        recv_win: Integer handle of the registered destination window
-            (host-side ``recv_win.handle``).
+        send_win: CuTeDSL view of the registered source window.
+        recv_win: CuTeDSL view of the registered destination window.
     """
     tidx, _, _ = cute.arch.thread_idx()
-    send_win = nccl_cute.Window(send_win)
-    recv_win = nccl_cute.Window(recv_win)
     team = dev_comm.team_world
     gin = dev_comm.gin(nccl_cute.GinBackendMask.ALL, 0)
     coop = nccl_cute.cta()
@@ -106,8 +102,8 @@ def test_nccl_put_kernel(
 @cute.jit
 def test_nccl_put(
     dev_comm: nccl_cute.DevComm,
-    send_win: cutlass.Int64,
-    recv_win: cutlass.Int64,
+    send_win,
+    recv_win,
 ):
     """Launch :py:func:`test_nccl_put_kernel` with a single-warp grid.
 
@@ -118,8 +114,8 @@ def test_nccl_put(
 
     Args:
         dev_comm: CuTeDSL view of an NCCL device communicator.
-        send_win: Integer handle of the source window.
-        recv_win: Integer handle of the destination window.
+        send_win: Registered source window.
+        recv_win: Registered destination window.
     """
     test_nccl_put_kernel(dev_comm, send_win, recv_win).launch(
         grid=[1, 1, 1],
@@ -178,7 +174,7 @@ def main():
     assert dev_comm_resource.ptr != 0
     dev_comm = nccl_cute.DevComm(dev_comm_resource)
 
-    test_nccl_put(dev_comm, send_win.handle, recv_win.handle)
+    test_nccl_put(dev_comm, send_win, recv_win)
 
     device.sync()
 

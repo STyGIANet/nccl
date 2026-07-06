@@ -1,28 +1,21 @@
-"""Pythonic wrappers for ``ncclDevComm``, ``ncclWindow``, and ``ncclTeam``.
+"""Pythonic wrappers for ``ncclDevComm`` and ``ncclTeam``.
 
 :class:`DevComm` is an explicit CuTeDSL view over a host-side
 ``DevCommResource``. Its JIT protocol passes a :py:class:`DevCommValue`
 native struct by value and reconstructs the same public type in value mode
 while tracing. Pointer storage is materialized lazily for device APIs whose
-FFI ABI requires a pointer or reference. :class:`Window` remains a pointer
-wrapper and exposes pointer translations (``win.local_pointer`` /
-``lsa_pointer`` / ``peer_pointer``) plus :meth:`Window.tensor`, which
-returns a ``cute.Tensor`` view over the registered buffer — the canonical
-input to :meth:`Gin.put`.
+FFI ABI requires a pointer or reference.
 """
 
 import cutlass
-import cutlass.cute as cute
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm
 from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
 
 from ...resources import DevCommResource
 from . import _bindings as raw
-from ._helpers import _to_ptr
 from ._structs import (
     DevCommValue,
-    _LLVMPtrType,
     ncclTeam as Team,
     ncclLsaBarrierHandle,
     ncclGinBarrierHandle,
@@ -30,37 +23,6 @@ from ._structs import (
 )
 from .gin import Gin, _alloca_ncclGin_C
 from .types import GinBackendMask
-
-
-def _ptr_wrapper(cls):
-    """Augment a ``@cute.native_struct``'s ``__init__`` for single-arg construction.
-
-    A single positional integer or ptr-castable arg auto-converts to
-    ``ptr=_to_ptr(x)``. Same-struct-value wrap and no-arg / kwarg modes
-    still delegate to the native_struct-generated init.
-
-    Args:
-        cls: ``@cute.native_struct`` class to augment.
-
-    Returns:
-        ``cls`` (mutated in place).
-    """
-    native_init = cls.__init__
-
-    @dsl_user_op
-    def __init__(self, *args, loc=None, ip=None, **kwargs):
-        if len(args) == 1 and not kwargs:
-            x = args[0]
-            is_struct_value = (
-                isinstance(x, ir.Value) and x.type == type(self)._struct_type
-            )
-            if not is_struct_value:
-                native_init(self, ptr=_to_ptr(x), loc=loc, ip=ip)
-                return
-        native_init(self, *args, loc=loc, ip=ip, **kwargs)
-
-    cls.__init__ = __init__
-    return cls
 
 
 def _device_function_entry_block():
@@ -225,82 +187,8 @@ def _adapt_dev_comm_resource(resource: DevCommResource) -> DevComm:
     return DevComm(resource)
 
 
-@_ptr_wrapper
-@cute.native_struct
-class Window:
-    """Pointer wrapper for ``ncclWindow_t``.
-
-    Construct with ``Window(<integer handle from host>)``. Use
-    :meth:`tensor` to obtain a ``cute.Tensor`` view over the registered
-    buffer (the canonical input to :meth:`Gin.put`), or the
-    ``local_pointer`` / ``lsa_pointer`` / ``peer_pointer`` methods to
-    translate ``(offset, peer/team)`` tuples to raw virtual addresses.
-    """
-
-    ptr: _LLVMPtrType
-
-    def local_pointer(self, offset: int) -> ir.Value:
-        """Translate ``offset`` to the local virtual address.
-
-        Args:
-            offset: byte offset within the window.
-
-        Returns:
-            ``!llvm.ptr`` ir.Value.
-        """
-        return raw.ncclGetLocalPointer(self.ptr, offset)
-
-    def lsa_pointer(self, offset: int, peer: int) -> ir.Value:
-        """Translate ``offset`` to ``peer``'s LSA virtual address.
-
-        Args:
-            offset: byte offset within the window.
-            peer: LSA-team peer rank.
-
-        Returns:
-            ``!llvm.ptr`` ir.Value.
-        """
-        return raw.ncclGetLsaPointer(self.ptr, offset, peer)
-
-    def peer_pointer(self, offset: int, peer: int, team: Team = None) -> ir.Value:
-        """Translate ``offset`` to ``peer``'s virtual address.
-
-        Args:
-            offset: byte offset within the window.
-            peer: rank within ``team``.
-            team: team to address within; default team if ``None``.
-
-        Returns:
-            ``!llvm.ptr`` ir.Value.
-        """
-        if team is None:
-            return raw.ncclGetPeerPointer(self.ptr, offset, peer)
-        return raw.ncclGetPeerPointerTeam(self.ptr, offset, team, peer)
-
-    def tensor(self, dtype, layout, offset: int = 0):
-        """Construct a ``cute.Tensor`` view over the registered buffer.
-
-        Canonical input to :meth:`Gin.put`: byte offset (relative to the
-        window) and transfer size are derived from the tensor's iterator
-        address and layout.
-
-        Args:
-            dtype: cutlass numeric type (e.g. ``cutlass.Int64``).
-            layout: ``cute.Layout`` from ``cute.make_layout(...)``.
-            offset: byte offset within the window. Default 0.
-
-        Returns:
-            ``cute.Tensor`` view at ``offset``.
-        """
-        return cute.make_tensor(
-            cute.make_ptr(dtype, self.local_pointer(offset)),
-            layout,
-        )
-
-
 __all__ = [
     "Team",
     "DevComm",
     "DevCommValue",
-    "Window",
 ]

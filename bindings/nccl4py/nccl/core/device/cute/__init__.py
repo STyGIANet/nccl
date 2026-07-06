@@ -7,8 +7,7 @@ Typical usage::
     import nccl.core.device.cute as nccl_cute
 
     @cute.kernel
-    def my_kernel(dev_comm: nccl_cute.DevComm, win: cutlass.Int64):
-        win = nccl_cute.Window(win)
+    def my_kernel(dev_comm: nccl_cute.DevComm, win: nccl_cute.Window):
         team = dev_comm.team_world
         coop = nccl_cute.cta()
         gin = dev_comm.gin(nccl_cute.GinBackendMask.ALL, 0)
@@ -21,12 +20,12 @@ Typical usage::
         ...
 
     @cute.jit
-    def launch(dev_comm: nccl_cute.DevComm, win: cutlass.Int64):
+    def launch(dev_comm: nccl_cute.DevComm, win):
         my_kernel(dev_comm, win).launch(grid=[1, 1, 1], block=[32, 1, 1])
 
     resource = nccl_comm.create_dev_comm(requirements=reqs)
     dev_comm = nccl_cute.DevComm(resource)
-    launch(dev_comm, win.handle)
+    launch(dev_comm, win)
 """
 
 try:
@@ -39,10 +38,11 @@ except ImportError as e:
         "    pip install 'nccl4py[cu13]'   # for CUDA 13"
     ) from e
 
-from . import types, coop, comm, gin, barrier
+from . import types, coop, comm, window, gin, barrier
 from .types import *    # MemoryOrder, GinFenceLevel, GinBackendMask
 from .coop import *     # Coop, cta, warp, thread, lanes, warp_span
-from .comm import *     # Team, DevComm, DevCommValue, Window
+from .comm import *     # Team, DevComm, DevCommValue
+from .window import *   # Window
 from .gin import *      # Gin
 from .barrier import *  # session classes + factories
 from ._helpers import device_bitcode_path
@@ -51,11 +51,13 @@ __all__ = [
     "types",
     "coop",
     "comm",
+    "window",
     "gin",
     "barrier",
     *types.__all__,
     *coop.__all__,
     *comm.__all__,
+    *window.__all__,
     *gin.__all__,
     *barrier.__all__,
     "device_bitcode_path",
