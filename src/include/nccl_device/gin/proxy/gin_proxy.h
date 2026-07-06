@@ -410,6 +410,13 @@ struct ncclGinApi_GetCounterPtr<NCCL_NET_DEVICE_GIN_PROXY> {
 };
 
 template <>
+struct ncclGinApi_SupportsStrongSignal<NCCL_NET_DEVICE_GIN_PROXY> {
+  NCCL_DEVICE_INLINE static bool call(ncclGinCtx) {
+    return true;
+  }
+};
+
+template <>
 struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_PROXY> {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
     ncclGinProxyGpuCtx_t* proxyCtx = &((ncclGinProxyGpuCtx_t*)ctx.handle)[ctx.contextId];

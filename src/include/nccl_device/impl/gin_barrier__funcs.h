@@ -133,6 +133,10 @@ NCCL_DEVICE_INLINE ncclResult_t ncclGinBarrierSession_internal<Coop>::syncIntern
     startCycle = clock64();
   }
 
+  if ((fence & ncclGinFenceLevel::Put) && !this->net._supportsStrongSignal()) {
+    fenceFlush(nccl::utility::acquireOrderOf(ord));
+  }
+
   // Signal/wait with the calling rank's own slot included on Put so self-puts get the same
   // visibility guarantee as puts to other peers. Peer rotation `peer = (rank+1+i) % nRanks`
   // spreads the load and visits self last (only when Put is requested).

@@ -214,6 +214,8 @@ struct ncclGin_BackendMask {
     ncclDevComm const&, int contextIndex,
     ncclGinResourceSharingMode resourceSharingMode_ = NCCL_GIN_RESOURCE_SHARING_GPU);
 
+  NCCL_DEVICE_INLINE bool _supportsStrongSignal() const;
+
   template <typename Coop = ncclCoopThread, typename DescriptorSmem = ncclGin_None>
   NCCL_DEVICE_INLINE void flushAsync(ncclTeam team, uint32_t peer, ncclGinRequest_t* outRequest,
                                      Coop coop = ncclCoopThread{}, uint32_t optFlags = ncclGinOptFlagsDefault,

@@ -177,6 +177,13 @@ struct ncclGinApi_Flush {
   NCCL_DEVICE_INLINE static ncclResult_t call(ncclGinCtx, Coop, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
                                               cuda::memory_order ord, uint32_t* abortFlag, uint64_t timeoutCycles);
 };
+
+// Whether the backend supports strong signals. If false, flush+weakSignal must have the same guarantees
+// as strong signals (required by the barrier implementation)
+template <ncclNetDeviceType backend>
+struct ncclGinApi_SupportsStrongSignal {
+  NCCL_DEVICE_INLINE static bool call(ncclGinCtx);
+};
 #endif
 
 #ifdef __CUDACC__

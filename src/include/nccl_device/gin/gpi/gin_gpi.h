@@ -609,6 +609,13 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_GPI> {
 };
 
 template <>
+struct ncclGinApi_SupportsStrongSignal<NCCL_NET_DEVICE_GIN_GPI> {
+  NCCL_DEVICE_INLINE static bool call(ncclGinCtx) {
+    return true;
+  }
+};
+
+template <>
 struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_GPI> {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
     gpi_gpu_channel_t* gpi_ctx = nccl::gin::gpi::gpi_gpu_channel_get_ptr(ctx);
