@@ -138,8 +138,7 @@ ncclResult_t rasNetSendCollReq(const struct rasCollRequest* req, bool* pAllDone,
     else if (req->type == RAS_COLL_DIAG) {
       ncclResult_t ret = rasCollDiagInit(&reqMod, &reqLen, &coll->data, &coll->nData);
       if (ret != ncclSuccess) {
-        INFO(NCCL_RAS, "RAS diagnostics collective initialization failed (%d); continuing with empty local response",
-             ret);
+        WARN("RAS diagnostics collective initialization failed (%d); continuing with empty local response", ret);
       }
     }
   } else {

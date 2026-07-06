@@ -21,10 +21,16 @@
 ncclResult_t rasDiagnosticsFormatLine(char* out, size_t outSize, const char* line) {
   int len;
 
-  if (out == nullptr || outSize == 0 || line == nullptr) return ncclInternalError;
+  if (out == nullptr || outSize == 0 || line == nullptr) {
+    WARN("RAS diagnostics line formatting received invalid arguments");
+    return ncclInternalError;
+  }
   diagLogInit();
   len = snprintf(out, outSize, "%s:%d NCCL DIAG %s", diagLogHost, diagLogPid, line);
-  if (len < 0 || len >= (int)outSize) return ncclInternalError;
+  if (len < 0 || len >= (int)outSize) {
+    WARN("RAS diagnostics line formatting failed");
+    return ncclInternalError;
+  }
   return ncclSuccess;
 }
 
@@ -59,6 +65,7 @@ static const struct rasDiagnosticsCheck rasDiagnosticsChecks[RAS_DIAG_CHECK_COUN
    rasDiagnosticsCudaDriverVersionSummarize},
   {RAS_DIAG_CHECK_ECC, rasDiagnosticsEccCollectLocal, rasDiagnosticsEccSummarize},
   {RAS_DIAG_CHECK_NVLINK, rasDiagnosticsNvLinkCollectLocal, rasDiagnosticsNvLinkSummarize},
+  {RAS_DIAG_CHECK_NCCL_ENV, rasDiagnosticsNcclEnvCollectLocal, rasDiagnosticsNcclEnvSummarize},
 };
 
 static ncclResult_t rasDiagnosticsSummarizePeerPayloads(
@@ -232,9 +239,18 @@ struct rasDiagnosticsClientState {
 // Stores diagnostics context and reporter state on a client before the collective starts.
 ncclResult_t rasDiagnosticsClientInit(struct rasClient* client, const struct rasDiagnosticsContext* ctx,
                                       const struct rasDiagnosticsReporter* reporter) {
-  if (client == nullptr || ctx == nullptr) return ncclInternalError;
-  if (reporter != nullptr && reporter->emit == nullptr) return ncclInternalError;
-  if (client->diagnostics != nullptr) return ncclInternalError;
+  if (client == nullptr || ctx == nullptr) {
+    WARN("RAS diagnostics client init received invalid arguments");
+    return ncclInternalError;
+  }
+  if (reporter != nullptr && reporter->emit == nullptr) {
+    WARN("RAS diagnostics client init received invalid reporter");
+    return ncclInternalError;
+  }
+  if (client->diagnostics != nullptr) {
+    WARN("RAS diagnostics client init requested with existing diagnostics state");
+    return ncclInternalError;
+  }
 
   NCCLCHECK(ncclCalloc(&client->diagnostics, 1));
   client->diagnostics->ctx = *ctx;
@@ -332,14 +348,14 @@ ncclResult_t rasDiagnosticsResume(struct rasClient* client) {
 
   (void)diagnostics->reporter.emit(diagnostics->reporter.target, "=== NCCL Diagnostics (passive) ===");
   ret = rasDiagnosticsSummarizePeerPayloads(&diagnostics->ctx, &diagnostics->reporter, coll->data, coll->nData);
-  if (ret != ncclSuccess) INFO(NCCL_RAS, "RAS diagnostics summary returned %d", ret);
+  if (ret != ncclSuccess) WARN("RAS diagnostics summary returned %d", ret);
   snprintf(line, sizeof(line), "completed in %.1f ms across %d %s",
            (double)(clockNano() - coll->startTime) / (CLOCK_UNITS_PER_SEC / 1000), nRanks,
            diagnostics->ctx.hasCommFilter ? "ranks" : "RAS peers");
   (void)diagnostics->reporter.emit(diagnostics->reporter.target, line);
   if (diagnostics->reporter.finish != nullptr) {
     ncclResult_t finishRet = diagnostics->reporter.finish(diagnostics->reporter.target, ret);
-    if (finishRet != ncclSuccess) INFO(NCCL_RAS, "RAS diagnostics reporter finish returned %d", finishRet);
+    if (finishRet != ncclSuccess) WARN("RAS diagnostics reporter finish returned %d", finishRet);
   }
 
   rasCollFree(coll);
