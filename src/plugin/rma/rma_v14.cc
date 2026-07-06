@@ -13,10 +13,6 @@
 static ncclRma_v14_t* ncclRma_v14;
 static ncclRma_t ncclRma;
 
-static ncclResult_t ncclRma_v14_init(void** ctx, uint64_t commId, ncclDebugLogger_t logFunction) {
-  return ncclRma_v14->init(ctx, commId, logFunction);
-}
-
 static ncclResult_t ncclRma_v14_iput(void* rmaCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size,
                                      uint64_t dstOff, void* dstMhandle, uint32_t rank, uint32_t optFlags,
                                      void** request) {
@@ -46,7 +42,7 @@ ncclRma_t* getNcclRma_v14(void* lib) {
   if (ncclRma_v14) {
     INFO(NCCL_INIT | NCCL_NET, "RMA/Plugin: Loaded rma plugin %s (v14)", ncclRma_v14->name);
     ncclRma.name = ncclRma_v14->name;
-    ncclRma.init = ncclRma_v14_init;
+    ncclRma.init = ncclRma_v14->init;
     ncclRma.devices = ncclRma_v14->devices;
     ncclRma.getProperties = ncclRma_v14->getProperties;
     ncclRma.listen = ncclRma_v14->listen;

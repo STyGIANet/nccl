@@ -246,10 +246,10 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
                                        ncclGinProxyGfd_t* gfd, struct ginProxyGfdState* state, bool isLastInBatch) {
   int signalOp;
   uint64_t signalVal;
-  // Defer the doorbell only when this peer's next GFD is already queued (so it is guaranteed pollable next
-  // iteration and the doorbell is rung before we leave Progress) and this isn't the last op in the batch.
+  // Aggregate only when this peer's next GFD is already queued and this isn't the last op in the batch.
+  // Otherwise, these ops might remain unsubmitted until the next batch.
   bool aggregate = isGfdAvailable(hostGpuCtx, targetRank) && !isLastInBatch;
-  uint32_t optFlags = aggregate ? ncclGinOptFlagsAggregateRequests : ncclGinOptFlagsDefault;
+  uint32_t optFlags = aggregate ? ncclRmaOptFlagsAggregateRequests : ncclRmaOptFlagsDefault;
 
   // Handle VA Signal operations (signal-only, no PUT)
   if (extractOp(gfd) & ncclGinProxyOpVASignal) {
@@ -258,8 +258,8 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
     signalVal = extractSignalVal(gfd);
     signalOp = mapGfdOpToSignalOp(gfd);
     NCCLCHECK(rmaBackend->iputSignal(ctx->rmaCtx, hostGpuCtx->contextId, 0, nullptr, 0, 0, nullptr, targetRank,
-                                     signalOff, signalHandle, signalVal, signalOp, extractIsStrongSignal(gfd),
-                                     optFlags, &state->request));
+                                     signalOff, signalHandle, signalVal, signalOp, extractIsStrongSignal(gfd), optFlags,
+                                     &state->request));
     return ncclSuccess;
   }
 

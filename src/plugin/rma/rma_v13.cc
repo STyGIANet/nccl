@@ -64,8 +64,7 @@ static ncclResult_t ncclRma_iputSignal(void* rmaCtx, int context, uint64_t srcOf
 }
 
 static ncclResult_t ncclRma_iput(void* rmaCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size,
-                                 uint64_t dstOff, void* dstMhandle, uint32_t rank, uint32_t optFlags,
-                                 void** request) {
+                                 uint64_t dstOff, void* dstMhandle, uint32_t rank, uint32_t optFlags, void** request) {
   (void)optFlags;
   return ncclRma_v13->iput(rmaCtx, context, srcOff, srcMhandle, size, dstOff, dstMhandle, rank, request);
 }

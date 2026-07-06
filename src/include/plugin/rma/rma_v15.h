@@ -12,6 +12,12 @@
 
 typedef ncclRmaConfig_v14_t ncclRmaConfig_v15_t;
 
+// Flags passed via the optFlags argument of the RMA op-table entry points.
+enum ncclRmaOptFlags {
+  ncclRmaOptFlagsDefault = 0,
+  ncclRmaOptFlagsAggregateRequests = (1 << 0),
+};
+
 typedef struct {
   const char* name;
   ncclResult_t (*init)(void** ctx, uint64_t commId, ncclDebugLogger_t logFunction);
@@ -28,8 +34,7 @@ typedef struct {
   ncclResult_t (*closeColl)(void* collComm);
   ncclResult_t (*closeListen)(void* listenComm);
 
-  // optFlags carries ncclGinOptFlags. With ncclGinOptFlagsAggregateRequests the backend may
-  // defer the doorbell; the default flushes.
+  // optFlags carries ncclRmaOptFlags.
   ncclResult_t (*iput)(void* rmaCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size, uint64_t dstOff,
                        void* dstMhandle, uint32_t rank, uint32_t optFlags, void** request);
   ncclResult_t (*iputSignal)(void* rmaCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size, uint64_t dstOff,

@@ -517,8 +517,7 @@ static ncclResult_t ncclRmaIbProxyGetRecvComm(struct ncclRmaIbProxyCtx* rmaProxy
 }
 
 ncclResult_t ncclRmaIbProxyIPut(void* rmaCtx, int context, uint64_t srcOff, void* srcMhandle, size_t size,
-                                uint64_t dstOff, void* dstMhandle, uint32_t rank, uint32_t optFlags,
-                                void** request) {
+                                uint64_t dstOff, void* dstMhandle, uint32_t rank, uint32_t optFlags, void** request) {
   (void)optFlags;
   struct ncclRmaIbProxyCtx* rmaProxyCtx = &((struct ncclRmaIbProxyCtx*)rmaCtx)[context];
 
