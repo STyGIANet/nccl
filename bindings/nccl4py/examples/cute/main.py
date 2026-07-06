@@ -2,8 +2,8 @@
 
 Demonstrates the canonical workflow for the nccl4py CuTeDSL device API:
 register two windows (send / recv) on the host, construct ``cute.Tensor``
-views over them inside the kernel via :meth:`Window.tensor`, issue a
-single :meth:`Gin.put` with a completion signal, wait on the signal on
+views over them inside the kernel via Window.tensor, issue a
+single Gin.put with a completion signal, wait on the signal on
 the destination rank, and validate the payload host-side.
 
 Run with two MPI ranks::
@@ -63,8 +63,7 @@ def test_nccl_put_kernel(
     unused.
 
     Args:
-        dev_comm: Value-mode
-            :py:class:`~nccl.core.device.cute.DevComm` reconstructed while
+        dev_comm: Value-mode nccl_cute.DevComm reconstructed while
             tracing from the host-mode instance.
         send_win: CuTeDSL view of the registered source window.
         recv_win: CuTeDSL view of the registered destination window.
@@ -101,21 +100,42 @@ def test_nccl_put_kernel(
 
 @cute.jit
 def test_nccl_put(
-    dev_comm: nccl_cute.DevComm,
-    send_win,
-    recv_win,
-):
-    """Launch :py:func:`test_nccl_put_kernel` with a single-warp grid.
+        #dev_comm: nccl.DevCommResource,
+        #send_win: nccl.RegisteredWindowHandle,
+        #recv_win: nccl.RegisteredWindowHandle
+        dev_comm: nccl_cute.DevComm,
+        send_win: nccl_cute.Window,
+        recv_win: nccl_cute.Window
+    ):
+    """Launch test_nccl_put_kernel with a single-warp grid.
 
-    The host-mode :py:class:`~nccl.core.device.cute.DevComm` reads its
-    resource-owned :c:type:`ncclDevComm_t <ncclDevComm>` as an aggregate JIT
-    argument. CuTeDSL reconstructs the same type in value mode for this body
-    and the kernel.
+    A @cute.jit function can take these arguments in two host-side
+    forms. As of cutlass-dsl 4.5, CuTeDSL validates each parameter
+    annotation against the argument BEFORE the JIT arg adapter runs, so
+    the annotation determines which form the caller may pass:
+
+    1. Pass the raw resources directly — the DevCommResource from
+       nccl_comm.create_dev_comm and the RegisteredWindowHandle from
+       nccl_comm.register_window. The registered JIT arg adapters
+       convert them implicitly, so inside this body the parameters are
+       already nccl_cute.DevComm / nccl_cute.Window. Annotate with the
+       resource types (nccl.DevCommResource /
+       nccl.RegisteredWindowHandle). Empty annotations also run, but
+       forfeit the type checking; annotating with the nccl_cute types
+       makes CuTeDSL report an error.
+    2. Convert explicitly at the call site —
+       nccl_cute.DevComm(dev_comm_resource) /
+       nccl_cute.Window(win_resource) — and annotate with the nccl_cute
+       types. Empty annotations also run, but forfeit the type checking.
+
+    Form 1 saves a line per argument at the call site; form 2 (used
+    here) gives better IDE completion and keeps static analysis tools
+    happy, since the annotations name the types the body actually sees.
 
     Args:
-        dev_comm: CuTeDSL view of an NCCL device communicator.
-        send_win: Registered source window.
-        recv_win: Registered destination window.
+        dev_comm: CuTeDSL view of the NCCL device communicator.
+        send_win: CuTeDSL view of the registered source window.
+        recv_win: CuTeDSL view of the registered destination window.
     """
     test_nccl_put_kernel(dev_comm, send_win, recv_win).launch(
         grid=[1, 1, 1],
@@ -160,10 +180,10 @@ def main():
     recv_buf[:] = 0
     device.sync()  # make host-side fill visible before the kernel runs
 
-    send_win = nccl_comm.register_window(send_buf)
-    recv_win = nccl_comm.register_window(recv_buf)
-    assert send_win is not None and send_win.is_valid
-    assert recv_win is not None and recv_win.is_valid
+    send_win_resource = nccl_comm.register_window(send_buf)
+    recv_win_resource = nccl_comm.register_window(recv_buf)
+    assert send_win_resource is not None and send_win_resource.is_valid
+    assert recv_win_resource is not None and recv_win_resource.is_valid
 
     reqs = nccl.NCCLDevCommRequirements(
         gin_connection_type=nccl.NcclGinConnectionType.FULL,
@@ -174,6 +194,12 @@ def main():
     assert dev_comm_resource.ptr != 0
     dev_comm = nccl_cute.DevComm(dev_comm_resource)
 
+    send_win = nccl_cute.Window(send_win_resource)
+    recv_win = nccl_cute.Window(recv_win_resource)
+
+    # Form 1: raw resources — to use this call, also swap the annotations in
+    # test_nccl_put's signature to the commented resource types.
+    #test_nccl_put(dev_comm_resource, send_win_resource, recv_win_resource)
     test_nccl_put(dev_comm, send_win, recv_win)
 
     device.sync()
@@ -188,8 +214,8 @@ def main():
             print(f"[rank {rank}] [ERROR] {mismatches} / {NUM_ELEMS} mismatches")
 
     dev_comm_resource.close()
-    send_win.close()
-    recv_win.close()
+    send_win_resource.close()
+    recv_win_resource.close()
     nccl_comm.destroy()
 
     return 0
