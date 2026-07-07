@@ -182,8 +182,12 @@ struct ncclRmaProxyState {
   void* rmaComms[NCCL_GIN_MAX_CONNECTIONS];
   ncclNetProperties_t props[NCCL_GIN_MAX_CONNECTIONS];
 
-  // Virtual RMA proxy contexts
-  int rmaProxyCtxCount;
+  // Virtual RMA proxy contexts. The array holds the user-addressable contexts
+  // [0, numRmaCtx) followed by NCCL-internal contexts [numRmaCtx, numRmaCtx +
+  // numIntCtx) used by the hierarchical CE collectives' rail step. numIntCtx is
+  // 0 unless the internal-context guard holds (see ncclRmaProxyConnectOnce).
+  int rmaProxyCtxCount;       // total = numRmaCtx + numIntCtx
+  int numIntCtx;              // count of internal contexts (NCCL_RMA_INT_CTX_PER_NIC * rmaCommCount, or 0)
   void** rmaProxyCtxs;
   int rmaProgress;         // RMA progress is enabled
   std::thread thread;
@@ -200,6 +204,10 @@ ncclResult_t ncclRmaProxyReclaimPlan(struct ncclComm* comm, struct ncclKernelPla
 // RMA Proxy lifecycle functions
 ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm);
 ncclResult_t ncclRmaProxyFinalize(struct ncclComm* comm);
+
+// True when NCCL should provision internal RMA contexts for the hierarchical CE
+// collectives: zero-CTA policy, a multi-clique (non-single-LSA) comm, > 1 node.
+bool ncclRmaWantInternalCtx(struct ncclComm* comm);
 
 // RMA Proxy context management
 ncclResult_t ncclRmaProxyCreateContext(struct ncclComm* comm, void* collComm, ncclNetProperties_t props,

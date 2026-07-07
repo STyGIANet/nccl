@@ -25,6 +25,10 @@ extern int64_t ncclParamIbDataDirect();
 
 NCCL_PARAM(RmaProxyDumpSignal, "RMA_PROXY_DUMP_SIGNAL", -1);
 NCCL_PARAM(RmaProxyQueueSize, "RMA_PROXY_QUEUE_SIZE", -1);
+// Internal RMA contexts (network connections) provisioned per NIC for the
+// hierarchical CE collectives' rail step. A single connection often cannot
+// saturate a fast port, so the rail spreads its traffic across several per NIC.
+static constexpr int NCCL_RMA_INT_CTX_PER_NIC = 4;
 
 #include <signal.h>
 static ncclRmaProxyState* ncclLastRmaProxyState;
@@ -375,6 +379,14 @@ void* ncclRmaProxyProgressThread(struct ncclRmaProxyState* rmaProxyState_) {
   }
 }
 
+// Internal RMA contexts back the hierarchical CE collectives' inter-node rail.
+// Provision them only on the path that actually uses them: the zero-CTA policy,
+// a multi-clique comm (LSA does not span the comm), and more than one node --
+// the same conditions under which the hierarchical CE collective is selected.
+bool ncclRmaWantInternalCtx(struct ncclComm* comm) {
+  return (comm->config.CTAPolicy & NCCL_CTA_POLICY_ZERO) && !ncclDevrIsOneLsaTeam(comm) && comm->nNodes > 1;
+}
+
 ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;
   struct ncclRmaProxyState* rmaProxyState = &comm->rmaState.rmaProxyState;
@@ -442,12 +454,19 @@ ncclResult_t ncclRmaProxyConnectOnce(struct ncclComm* comm) {
   free(allHandles);
   allHandles = NULL;
 
-  // Create virtual RMA proxy contexts
-  rmaProxyState->rmaProxyCtxCount = comm->config.numRmaCtx;
+  // Create virtual RMA proxy contexts. The array is laid out as the
+  // user-addressable contexts [0, numRmaCtx) followed by NCCL-internal contexts
+  // [numRmaCtx, numRmaCtx + numIntCtx) for the hierarchical CE collectives. The
+  // internal range is provisioned only when needed (NCCL_RMA_INT_CTX_PER_NIC
+  // contexts per physical RMA communicator), so it stays empty on paths that
+  // don't use it.
+  rmaProxyState->numIntCtx = ncclRmaWantInternalCtx(comm) ? NCCL_RMA_INT_CTX_PER_NIC * rmaProxyState->rmaCommCount : 0;
+  rmaProxyState->rmaProxyCtxCount = comm->config.numRmaCtx + rmaProxyState->numIntCtx;
   NCCLCHECK(ncclCalloc(&rmaProxyState->rmaProxyCtxs, rmaProxyState->rmaProxyCtxCount));
   for (int n = 0; n < rmaProxyState->rmaProxyCtxCount; n++) {
-    // Round-robin mapping to physical RMA communicator contexts
-    int collCommIdx = n % rmaProxyState->rmaCommCount;
+    // Both ranges map round-robin to the physical RMA communicators; the
+    // internal range lands NCCL_RMA_INT_CTX_PER_NIC contexts on each.
+    int collCommIdx = (n < comm->config.numRmaCtx ? n : n - comm->config.numRmaCtx) % rmaProxyState->rmaCommCount;
     NCCLCHECKGOTO(ncclRmaProxyCreateContext(comm, rmaProxyState->rmaComms[collCommIdx],
                                             rmaProxyState->props[collCommIdx], collCommIdx,
                                             &rmaProxyState->rmaProxyCtxs[n]),

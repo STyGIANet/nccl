@@ -125,7 +125,9 @@ starting with NCCL 2.31; earlier versions support only ``ctx`` 0.
 For best performance, provision multiple contexts and distribute traffic across them -- for example, split a
 large message into chunks and put each chunk on a different context. The number of contexts that best
 saturates the network is platform-dependent; provisioning at least one per local NIC is a reasonable
-starting point.
+starting point. Distributing traffic pays off only for large transfers: each additional context adds launch
+and progress overhead, which dominates for small messages. Keep small transfers on a single context and
+distribute only large ones; the crossover size is platform-dependent.
 
 .. note::
 
