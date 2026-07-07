@@ -107,7 +107,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
   int qpsPerDev[NCCL_IB_MAX_DEVS_PER_NIC] = {};
   for (int i = 0; i < nqps; i++) {
     NCCLCHECK(ncclIbCommBaseGetQpForRequest(&comm->base, reqs[0]->id, i, &qps[i], &qpIndexes[i]));
-    qpsPerDev[qps[i]->devIndex]++;
+    qpsPerDev[comm->base.qps[qpIndexes[i]].devIndex]++;
   }
   uint64_t wr_id = 0ULL;
   for (int r = 0; r < nreqs; r++) {
@@ -170,6 +170,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
           __func__, reqs[0], reqs[0]->base, reqs[0]->id, slot, nreqs, wr_id, qp->qp->qp_num, qp->devIndex, qpIndex);
 
     int devIndex = qp->devIndex;
+    int origDevIndex = comm->base.qps[qpIndex].devIndex;
     for (int r = 0; r < nreqs; r++) {
       // Track this event for completion
       // ncclIbAddEvent(reqs[r], devIndex);
@@ -183,7 +184,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
       // When all devices have the same speed, weights are equal and it reduces
       // to equal-split formula.
       comm->wrs[r].sg_list->length =
-        DIVUP(DIVUP((uint64_t)reqs[r]->send.size * weights[qp->devIndex], 100 * qpsPerDev[qp->devIndex]),
+        DIVUP(DIVUP((uint64_t)reqs[r]->send.size * weights[origDevIndex], 100 * qpsPerDev[origDevIndex]),
               IB_WRITE_CHUNK_ALIGNMENT) *
         IB_WRITE_CHUNK_ALIGNMENT;
       // Check the data left to send. If the send is too small, it might be
