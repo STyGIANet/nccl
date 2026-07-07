@@ -314,6 +314,7 @@ struct gdaki_exch_info {
   char ib_dev_name[IBV_SYSFS_NAME_MAX];
   int cuda_id;
   int rank;
+  enum ibv_mtu active_mtu;
 };
 
 struct gdaki_context {
@@ -373,6 +374,7 @@ static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_co
   snprintf(exch_info->ib_dev_name, IBV_SYSFS_NAME_MAX, "%s", gdaki_ctx->ib_dev_name);
   exch_info->cuda_id = gdaki_ctx->cuda_id;
   exch_info->rank = gdaki_ctx->rank;
+  exch_info->active_mtu = gdaki_ctx->port_attr.active_mtu;
 }
 
 static ncclResult_t gdakiCreateVerbsAh(struct gdaki_context* ctx, int ib_sl, int ib_tc, int ib_gid_index) {
@@ -398,6 +400,51 @@ destroy_verbs_ah:
   return status;
 }
 
+static bool gdakiIsValidActiveMtu(enum ibv_mtu active_mtu) {
+  switch (active_mtu) {
+  case IBV_MTU_256:
+  case IBV_MTU_512:
+  case IBV_MTU_1024:
+  case IBV_MTU_2048:
+  case IBV_MTU_4096:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static ncclResult_t gdakiGetPathMtu(enum ibv_mtu local_active_mtu, enum ibv_mtu remote_active_mtu,
+                                    enum doca_verbs_mtu_size* path_mtu) {
+  if (!gdakiIsValidActiveMtu(local_active_mtu) || !gdakiIsValidActiveMtu(remote_active_mtu)) {
+    WARN("Unexpected active_mtu value (local %d, remote %d)", local_active_mtu, remote_active_mtu);
+    return ncclInternalError;
+  }
+
+  enum ibv_mtu active_mtu = local_active_mtu < remote_active_mtu ? local_active_mtu : remote_active_mtu;
+  switch (active_mtu) {
+  case IBV_MTU_256:
+    *path_mtu = DOCA_VERBS_MTU_SIZE_256_BYTES;
+    break;
+  case IBV_MTU_512:
+    *path_mtu = DOCA_VERBS_MTU_SIZE_512_BYTES;
+    break;
+  case IBV_MTU_1024:
+    *path_mtu = DOCA_VERBS_MTU_SIZE_1K_BYTES;
+    break;
+  case IBV_MTU_2048:
+    *path_mtu = DOCA_VERBS_MTU_SIZE_2K_BYTES;
+    break;
+  case IBV_MTU_4096:
+    *path_mtu = DOCA_VERBS_MTU_SIZE_4K_BYTES;
+    break;
+  default:
+    WARN("Unexpected active_mtu value %d", active_mtu);
+    return ncclInternalError;
+  }
+
+  return ncclSuccess;
+}
+
 static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_verbs_qp_hl* gqp,
                                    struct gdaki_exch_info* exch_info) {
   ncclResult_t status = ncclSuccess;
@@ -406,6 +453,7 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
     ncclParamGinGdakiMaxDestRdAtomic() > 0 ? ncclParamGinGdakiMaxDestRdAtomic() : ctx->ib_dev_attr.max_qp_rd_atom;
   int max_qp_rd_atomic =
     ncclParamGinGdakiMaxQpRdAtomic() > 0 ? ncclParamGinGdakiMaxQpRdAtomic() : ctx->ib_dev_attr.max_qp_rd_atom;
+  enum doca_verbs_mtu_size path_mtu;
   int dlid = exch_info->lid;
 
   if (ctx->port_attr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
@@ -429,11 +477,11 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
     }
   }
 
+  NCCLCHECK(gdakiGetPathMtu(ctx->port_attr.active_mtu, exch_info->active_mtu, &path_mtu));
   DOCACHECK(doca_verbs_ah_attr_set_gid(ctx->ah, exch_info->vgid));
   DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, dlid));
   DOCACHECK(doca_verbs_qp_attr_create(&verbs_qp_attr));
-  DOCACHECKGOTO(doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, DOCA_VERBS_MTU_SIZE_4K_BYTES), status,
-                destroy_verbs_qp_attr);
+  DOCACHECKGOTO(doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, path_mtu), status, destroy_verbs_qp_attr);
   DOCACHECKGOTO(doca_verbs_qp_attr_set_rq_psn(verbs_qp_attr, 0), status, destroy_verbs_qp_attr);
 
   DOCACHECKGOTO(doca_verbs_qp_attr_set_sq_psn(verbs_qp_attr, 0), status, destroy_verbs_qp_attr);
