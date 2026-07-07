@@ -344,6 +344,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
   if (comm->sharedRes) {
     sharedResRefCount = ncclAtomicRefCountDecrement(&comm->sharedRes->refCount);
     if (sharedResRefCount == 0) {
+      NCCLCHECK(ncclGinFinalize(comm));
       for (int c = 0; c < MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
         if (comm->sharedRes->devPeers[c]) ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
@@ -392,7 +393,6 @@ static ncclResult_t commFree(ncclComm_t comm) {
   NCCLCHECK(ncclProfilerPluginFinalize(comm));
   if (sharedResRefCount == 0) {
     NCCLCHECK(ncclNetFinalize(comm));
-    NCCLCHECK(ncclGinFinalize(comm));
     NCCLCHECK(ncclRmaFinalize(comm));
   }
   if (comm->context) ncclCudaContextDrop(comm->context);
