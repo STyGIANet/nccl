@@ -8,9 +8,9 @@ FFI ABI requires a pointer or reference.
 """
 
 import cutlass
-from cutlass._mlir import ir
+from cutlass.cutlass_dsl import ir
 from cutlass._mlir.dialects import llvm
-from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op
 
 from ...resources import DevCommResource
 from . import _bindings as raw

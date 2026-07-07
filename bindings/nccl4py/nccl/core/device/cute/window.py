@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import cutlass
 import cutlass.cute as cute
-from cutlass._mlir import ir
+from cutlass.cutlass_dsl import ir
 
 from ...resources import RegisteredWindowHandle
 from . import _bindings as raw

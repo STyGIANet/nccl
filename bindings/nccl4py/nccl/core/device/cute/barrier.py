@@ -24,9 +24,9 @@ Construct via the module-level factories:
 """
 
 import cutlass.cute as cute
-from cutlass._mlir import ir
+from cutlass.cutlass_dsl import ir
 from cutlass._mlir.dialects import llvm
-from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op
 
 from . import _bindings as raw
 from ._helpers import _to_ptr

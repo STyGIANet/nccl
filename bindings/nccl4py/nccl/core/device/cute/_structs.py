@@ -8,7 +8,7 @@ Codegen target — each entry is 1:1 with a C struct definition.
 
 import cutlass
 import cutlass.cute as cute
-from cutlass._mlir import ir
+from cutlass.cutlass_dsl import ir
 
 
 # === MLIR type adapters ===

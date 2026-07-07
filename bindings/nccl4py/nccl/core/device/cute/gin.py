@@ -13,7 +13,7 @@ Construct via :meth:`DevComm.gin`::
 import cutlass
 import cutlass.cute as cute
 from cutlass._mlir.dialects import llvm
-from cutlass.base_dsl._mlir_helpers.op import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op
 
 from . import _bindings as raw
 from ._structs import _LLVMPtrType, ncclGin_C, ncclTeam, ncclCoopAny
