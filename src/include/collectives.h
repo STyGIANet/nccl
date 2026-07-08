@@ -71,7 +71,7 @@ inline int ncclTypeSize(ncclDataType_t type) {
 #define NCCL_MODE_PTR 2
 struct ncclConnFifo {
   int mode;
-  int offset;
+  ssize_t offset;
   ssize_t size;
   void* ptr;
 };

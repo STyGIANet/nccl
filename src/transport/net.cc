@@ -64,7 +64,7 @@ static_assert(sizeof(ncclNetHandle_t) <= CONNECT_SIZE, "NET Connect info is too 
 struct connectMapMem {
   char* gpuPtr;
   char* cpuPtr;
-  int size;
+  ssize_t size;
   ncclIpcDesc ipcDesc;
   ncclShmIpcDesc_t attachDesc;
   ncclShmIpcDesc_t createDesc;
@@ -105,7 +105,7 @@ struct sendNetResources {
   int connIndex;
   int sameDevice;  // proxy and kernel are on the same CUDA device
   char* buffers[NCCL_NUM_PROTOCOLS];
-  int buffSizes[NCCL_NUM_PROTOCOLS];
+  ssize_t buffSizes[NCCL_NUM_PROTOCOLS];
   void* mhandles[NCCL_NUM_PROTOCOLS];
   uint64_t step;
   uint64_t llLastCleaning;
@@ -139,7 +139,7 @@ struct recvNetResources {
   int connIndex;
   int sameDevice;  // proxy and kernel are on the same CUDA device
   char* buffers[NCCL_NUM_PROTOCOLS];
-  int buffSizes[NCCL_NUM_PROTOCOLS];
+  ssize_t buffSizes[NCCL_NUM_PROTOCOLS];
   void* mhandles[NCCL_NUM_PROTOCOLS];
   uint64_t step;
   uint64_t llLastCleaning;
@@ -414,13 +414,13 @@ static ncclResult_t netCreateShm(struct ncclProxyState* proxyState, struct conne
 static ncclResult_t netDumpMap(struct connectMap* map) {
   printf("Dump map same process %d shared %d\n", map->sameProcess, map->shared);
   struct connectMapMem* mem = map->mems + NCCL_NET_MAP_HOSTMEM;
-  printf("Mem 0: Host mem (%x B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
+  printf("Mem 0: Host mem (%zx B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
   mem = map->mems + NCCL_NET_MAP_DEVMEM;
-  printf("Mem 1: Vid  mem (%x B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
+  printf("Mem 1: Vid  mem (%zx B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
   mem = map->mems + NCCL_NET_MAP_SHARED_HOSTMEM;
-  printf("Mem 2: Shared Host mem (%x B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
+  printf("Mem 2: Shared Host mem (%zx B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
   mem = map->mems + NCCL_NET_MAP_SHARED_DEVMEM;
-  printf("Mem 3: Shared Vid mem (%x B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
+  printf("Mem 3: Shared Vid mem (%zx B) CPU %p GPU %p\n", mem->size, mem->cpuPtr, mem->gpuPtr);
   printf("SendMem -> Used %d Bank %d Offset %x, cpu %p gpu %p\n", map->offsets.sendMem & NCCL_NET_MAP_MASK_USED ? 1 : 0,
          NCCL_NET_MAP_OFFSET_BANK(map, sendMem), map->offsets.sendMem & NCCL_NET_MAP_MASK_OFFSET,
          NCCL_NET_MAP_GET_POINTER(map, cpu, sendMem), NCCL_NET_MAP_GET_POINTER(map, gpu, sendMem));
@@ -664,7 +664,7 @@ static ncclResult_t recvFree(struct ncclComm* comm, struct ncclConnector* recv) 
 
 #define NCCL_SHARED_STEPS 16
 static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int cuda, int tpLocalRank, int type,
-                                         int sameProcess, int nChannels, char** gpuPtr, char** cpuPtr, int* size,
+                                         int sameProcess, int nChannels, char** gpuPtr, char** cpuPtr, ssize_t* size,
                                          ncclIpcDesc* ipcDesc) {
   if (cuda == 0 && sameProcess == 0) {
     WARN("PXN should not use host buffers for data");
@@ -682,7 +682,7 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
   struct ncclProxySharedP2p* state = type == 0 ? &peer->send : &peer->recv;
   state->refcount++;
   if (state->size == 0) {
-    state->size = nChannels * NCCL_SHARED_STEPS * proxyState->p2pChunkSize;
+    state->size = (ssize_t)nChannels * NCCL_SHARED_STEPS * proxyState->p2pChunkSize;
   }
 
   if (size) *size = state->size;
@@ -703,11 +703,11 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
   return ncclSuccess;
 }
 
-static ncclResult_t sharedBuffersGet(struct ncclProxyState* proxyState, int channel, int slot, int* offset,
+static ncclResult_t sharedBuffersGet(struct ncclProxyState* proxyState, int channel, int slot, ssize_t* offset,
                                      size_t* size) {
   // Use different pools for different channels and also separate send/recv.
   int globalSlot = (channel * NCCL_SHARED_STEPS) + slot;
-  *offset = proxyState->p2pChunkSize * globalSlot;
+  *offset = (ssize_t)proxyState->p2pChunkSize * globalSlot;
   if (size) *size = proxyState->p2pChunkSize;
   return ncclSuccess;
 }
@@ -1358,7 +1358,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
         if (resources->shared) {
           if (!sub->reg) {
             int sharedBuffSlot = sub->posted % maxDepth;
-            int offset;
+            ssize_t offset;
             NCCLCHECK(sharedBuffersGet(proxyState, sub->channelId, sharedBuffSlot * args->nsubs + s, &offset, NULL));
             resources->recvMem->connFifo[buffSlot].offset = offset;
             std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -1573,7 +1573,7 @@ static ncclResult_t recvProxyProgress(struct ncclProxyState* proxyState, struct 
                   std::min((ssize_t)NCCL_MAX_NET_SIZE, (ssize_t)(sub->nbytes - sub->posted * NCCL_MAX_NET_SIZE));
               } else {
                 int sharedBuffSlot = sub->posted % maxDepth;
-                int offset;
+                ssize_t offset;
                 NCCLCHECK(sharedBuffersGet(proxyState, sub->channelId, sharedBuffSlot * args->nsubs + s + i, &offset,
                                            sizes + subCount));
                 connFifo[buffSlot].offset = offset;

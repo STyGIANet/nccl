@@ -1003,7 +1003,7 @@ static ncclResult_t sendProxyProgress(struct ncclProxyState* proxyState, struct 
           std::atomic_thread_fence(std::memory_order_seq_cst);
         }
         volatile uint64_t* sendHead = resources->gdcSync ? resources->gdcSync : &resources->sendMem->head;
-        TRACE(NCCL_NET, "sendProxy [%ld/%d/%d/%d] posted offset %d @ %p signal %ld->%ld", long(sub->posted), group,
+        TRACE(NCCL_NET, "sendProxy [%ld/%d/%d/%d] posted offset %zd @ %p signal %ld->%ld", long(sub->posted), group,
               buffSlot, sub->nsteps, resources->recvMem->connFifo[buffSlot].offset,
               &resources->recvMem->connFifo[buffSlot].offset, long(*sendHead),
               long(sub->base + sub->posted + args->sliceSteps - NCCL_STEPS));

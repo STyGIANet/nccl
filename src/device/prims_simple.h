@@ -131,7 +131,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
           }
         }
       } else if ((flags & ConnFifoEnabled) && connFifo[step % NCCL_STEPS].mode == NCCL_MODE_OFFSET) {
-        ptrs[index] = connEltsFifo + loadInt(&connFifo[step % NCCL_STEPS].offset) / sizeof(T);
+        ptrs[index] = connEltsFifo + loadSsize(&connFifo[step % NCCL_STEPS].offset) / sizeof(T);
       } else if (isSendNotRecv && DirectSend) {
         if (flags & DirectWrite) {
           ptrs[index] = directBuff + dstIx + offset;
@@ -334,7 +334,7 @@ public:
           }
           void** ptrs = isSendNotRecv ? ncclShmem.groups[group].dsts : ncclShmem.groups[group].srcs;
           if ((flags & ConnFifoEnabled) && connFifo[step % NCCL_STEPS].mode == NCCL_MODE_OFFSET) {
-            int offset = loadInt(&connFifo[step % NCCL_STEPS].offset);
+            ssize_t offset = loadSsize(&connFifo[step % NCCL_STEPS].offset);
             ptrs[index] = connEltsFifo + offset / sizeof(T);
           } else if (Direct && fn.work->regUsed) {
             if (isSendNotRecv) {
