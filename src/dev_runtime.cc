@@ -38,6 +38,40 @@ extern struct ncclDevCommCompat ncclDevCommCompat_v22902, ncclDevCommCompat_v229
 static struct ncclDevCommCompat* devCommCompat[] = {&ncclDevCommCompat_v22902, &ncclDevCommCompat_v22907,
                                                     &ncclDevCommCompat_v23000, &ncclDevCommCompat_v23100, nullptr};
 
+// Returns ncclInvalidUsage if the compiled version is greater than the runtime version
+// and NCCL_ENABLE_VERSION_CHECK=0 is not set
+static ncclResult_t getNcclVersionCompat(int version, struct ncclDevCommCompat** devCompatPtr) {
+  *devCompatPtr = nullptr;
+
+  if (version > NCCL_VERSION_CODE && ncclParamEnableVersionCheck()) {
+    char compiledBuf[16], runtimeBuf[16];
+    WARN("NCCL library is too old. This application was compiled with NCCL version %s, but is running with NCCL "
+         "library version %s.",
+         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
+         ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
+    return ncclInvalidUsage;
+  }
+
+  struct ncclDevCommCompat* devCompat = nullptr;
+  for (int i = 0; devCommCompat[i]; i++) {
+    if (version >= devCommCompat[i]->minVersion && version <= devCommCompat[i]->maxVersion) {
+      devCompat = devCommCompat[i];
+      break;
+    }
+  }
+  if (devCompat == nullptr) {
+    char compiledBuf[16], runtimeBuf[16];
+    WARN("NCCL library is not backwards compatible. This application was compiled with NCCL version %s, but is running "
+         "with NCCL library version %s.",
+         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
+         ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
+    return ncclInvalidUsage;
+  }
+  *devCompatPtr = devCompat;
+
+  return ncclSuccess;
+}
+
 // Global window map using intrusive address map
 // Uses ncclDevrWindow directly (vidmem as key, next pointer embedded in struct)
 static std::mutex ncclWindowMapMutex;
@@ -1091,8 +1125,7 @@ void ncclDevCommDump(struct ncclDevComm* devComm) {
 }
 
 ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCommRequirements* reqs,
-                                        struct ncclDevComm* outDevComm, bool isInternal,
-                                        struct ncclDevCommCompat* devCompat, uint32_t deviceCodeVersion) {
+                                        struct ncclDevComm* outDevComm, bool isInternal, uint32_t deviceCodeVersion) {
   ncclResult_t ret = ncclSuccess;
   struct ncclDevrState* devr = &comm->devrState;
   struct ncclTeam world = ncclTeamWorld(comm);
@@ -1118,6 +1151,8 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
   void* outDevCommPreserve = nullptr;
   struct ncclDevComm outDevCommTmp;
   cudaStreamCaptureMode captureMode = cudaStreamCaptureModeRelaxed;
+  struct ncclDevCommCompat* devCompat;
+  NCCLCHECK(getNcclVersionCompat(deviceCodeVersion, &devCompat));
 
   // This function always operates on the current version of the ncclDevResourceRequirements structure, thanks
   // to the deepCopyDevCommRequirements() function, so version checks are not needed.  The data in reqs can also
@@ -1444,40 +1479,6 @@ bool ncclDevrWindowHasSysmemSegment(struct ncclDevrWindow* win) {
   return win != NULL && win->memory->globalHasSysmemSegment;
 }
 
-// Returns ncclInvalidUsage if the compiled version is greater than the runtime version
-// and NCCL_ENABLE_VERSION_CHECK=0 is not set
-static ncclResult_t getNcclVersionCompat(int version, struct ncclDevCommCompat** devCompatPtr) {
-  *devCompatPtr = nullptr;
-
-  if (version > NCCL_VERSION_CODE && ncclParamEnableVersionCheck()) {
-    char compiledBuf[16], runtimeBuf[16];
-    WARN("NCCL library is too old. This application was compiled with NCCL version %s, but is running with NCCL "
-         "library version %s.",
-         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
-         ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
-    return ncclInvalidUsage;
-  }
-
-  struct ncclDevCommCompat* devCompat = nullptr;
-  for (int i = 0; devCommCompat[i]; i++) {
-    if (version >= devCommCompat[i]->minVersion && version <= devCommCompat[i]->maxVersion) {
-      devCompat = devCommCompat[i];
-      break;
-    }
-  }
-  if (devCompat == nullptr) {
-    char compiledBuf[16], runtimeBuf[16];
-    WARN("NCCL library is not backwards compatible. This application was compiled with NCCL version %s, but is running "
-         "with NCCL library version %s.",
-         ncclVersionToString(version, compiledBuf, sizeof(compiledBuf)),
-         ncclVersionToString(NCCL_VERSION_CODE, runtimeBuf, sizeof(runtimeBuf)));
-    return ncclInvalidUsage;
-  }
-  *devCompatPtr = devCompat;
-
-  return ncclSuccess;
-}
-
 void ncclDevCommCopyLsaData(void* dstRankPtr, void const* srcRankPtr) {
   memcpy(dstRankPtr, srcRankPtr, offsetof(struct ncclDevComm, railGinBarrier) - offsetof(struct ncclDevComm, rank));
 }
@@ -1555,8 +1556,9 @@ ncclResult_t ncclDevCommCreate(ncclComm_t comm, struct ncclDevCommRequirements c
     deviceCodeVersion = NCCL_VERSION_CODE;
   }
 
-  struct ncclDevCommCompat* devCompat = nullptr;
-  NCCLCHECK(getNcclVersionCompat(deviceCodeVersion, &devCompat));
+  // Use compile-time compat for the reqs filter, regardless of device code version.
+  struct ncclDevCommCompat* reqsCompat = nullptr;
+  NCCLCHECK(getNcclVersionCompat(reqs->version, &reqsCompat));
 
   ncclResult_t ret = ncclSuccess;
   int saveDev;
@@ -1579,11 +1581,10 @@ ncclResult_t ncclDevCommCreate(ncclComm_t comm, struct ncclDevCommRequirements c
   NCCLCHECKGOTO(ncclCalloc(&task, 1), ret, fail);
   // reqs must be deep copied to the task so background threads can safely access it
   NCCLCHECKGOTO(deepCopyDevCommRequirements(reqs, &task->reqs), ret, fail);
-  if (devCompat->devCommRequirementsFilter) {
-    NCCLCHECKGOTO(devCompat->devCommRequirementsFilter(comm, task->reqs), ret, fail);
+  if (reqsCompat->devCommRequirementsFilter) {
+    NCCLCHECKGOTO(reqsCompat->devCommRequirementsFilter(comm, task->reqs), ret, fail);
   }
   task->outDevComm = outDevComm;
-  task->devCompat = devCompat;
   task->deviceCodeVersion = deviceCodeVersion;
   ncclIntruQueueEnqueue(&comm->devrState.commCreateTaskQueue, task);
   ncclGroupCommJoin(comm, ncclGroupTaskTypeSymRegister);

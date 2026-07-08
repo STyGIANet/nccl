@@ -128,6 +128,7 @@ struct ncclDevCommRequirements {
   ncclGinType_t ginType;
   // If true, initialize the devComm assuming the version of the device code is the same
   // as the runtime version of the NCCL library (i.e., the device code is JIT-compiled).
+  // When true, the DevComm must be allocated according to devCommRuntimeVersionSize.
   bool useRuntimeVersion;
 };
 
