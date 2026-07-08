@@ -23,9 +23,13 @@ NCCL_DEVICE_INLINE size_t windowOffsetToGinOffset(ncclWindow_t window, size_t of
   return 4096 * size_t(loadConst(&window->ginOffset4K)) + offset;
 }
 
-NCCL_DEVICE_INLINE ncclGinWindow_t getGinWindow(ncclGinWindow_t const* ginWins, int backendIndex, int connectionId) {
+NCCL_DEVICE_INLINE ncclGinWindow_t getGinWindow(ncclWindow_t win, int backendIndex, int connectionId) {
   using nccl::utility::loadConst;
-  return loadConst(&ginWins[backendIndex * NCCL_GIN_MAX_CONNECTIONS + connectionId]);
+  if (backendIndex == 0) {
+    return loadConst(&win->ginWinsDefaultBackend[connectionId]);
+  }
+  size_t idx = (size_t)backendIndex * loadConst(&win->numSegments);
+  return loadConst(&win->ginMultiSegmentWins[idx].ginWins[connectionId]);
 }
 
 NCCL_DEVICE_INLINE ncclGinWindow_t getSegmentGinWindow(
@@ -34,9 +38,8 @@ NCCL_DEVICE_INLINE ncclGinWindow_t getSegmentGinWindow(
   if (backendIndex == 0) {
     return loadConst(&segWin.ginWins[connectionId]);
   }
-  size_t idx = (size_t)seg * NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT +
-               (size_t)(backendIndex - 1) * NCCL_GIN_MAX_CONNECTIONS + connectionId;
-  return loadConst(&win->ginMultiSegmentExtraWins[idx]);
+  size_t idx = (size_t)backendIndex * loadConst(&win->numSegments) + seg;
+  return loadConst(&win->ginMultiSegmentWins[idx].ginWins[connectionId]);
 }
 
 NCCL_DEVICE_INLINE int teamRankToGinRank(ncclDevComm const& comm, ncclTeam team, int teamRank) {
@@ -337,7 +340,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = net.comm.ginStrongLegacySignals;
@@ -357,7 +360,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = true;
@@ -377,7 +380,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = false;
@@ -396,7 +399,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = net.comm.ginStrongLegacySignals;
@@ -416,7 +419,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = true;
@@ -436,7 +439,7 @@ NCCL_DEVICE_INLINE ncclGinSignalDescriptor ncclGin_getSignalDescriptor(ncclGin c
   ncclGinSignalDescriptor desc{};
   desc.type = NCCL_GIN_SIGNAL_TYPE_VA;
   desc.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(arg.signalWindow->ginWins, net.comm.backendIndex, net.connectionId);
+    nccl::gin::internal::getGinWindow(arg.signalWindow, net.comm.backendIndex, net.connectionId);
   desc.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(arg.signalWindow, arg.signalOffset);
   desc.vaSignal.ncclWindow = arg.signalWindow;
   desc.isStrong = false;
@@ -518,13 +521,13 @@ NCCL_DEVICE_INLINE void ncclGinPut_v2(ncclGin_C* net, ncclTeam team, int peer, n
     signal.indexedSignal.signalId = signalId;
   }
   if (coop.thread_rank() == 0) {
-    ncclGinCall<ncclGinApi_Put>(
-      ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer), /*hasWins=*/true,
-      nccl::gin::internal::getGinWindow(dstWin->ginWins, net->comm.backendIndex, net->connectionId),
-      4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset,
-      nccl::gin::internal::getGinWindow(srcWin->ginWins, net->comm.backendIndex, net->connectionId),
-      4096 * size_t(loadConst(&srcWin->ginOffset4K)) + srcOffset, bytes, signal, signalOp, signalOpArg, isCounter,
-      counterId, isDescriptor, descriptor, requiredRelease, givenRelease, optFlags);
+    ncclGinCall<ncclGinApi_Put>(ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer), /*hasWins=*/true,
+                                nccl::gin::internal::getGinWindow(dstWin, net->comm.backendIndex, net->connectionId),
+                                4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset,
+                                nccl::gin::internal::getGinWindow(srcWin, net->comm.backendIndex, net->connectionId),
+                                4096 * size_t(loadConst(&srcWin->ginOffset4K)) + srcOffset, bytes, signal, signalOp,
+                                signalOpArg, isCounter, counterId, isDescriptor, descriptor, requiredRelease,
+                                givenRelease, optFlags);
   }
   coop.sync();
 }
@@ -558,9 +561,9 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
     if (ncclGin_isDeviceOnly(bufType)) {
       ncclGinCall<ncclGinApi_Put>(
         ctx, ncclCoopThread(), teamRankToGinRank(this->comm, team, peer), /*hasWins=*/true,
-        nccl::gin::internal::getGinWindow(dstWin->ginWins, this->comm.backendIndex, this->connectionId),
+        nccl::gin::internal::getGinWindow(dstWin, this->comm.backendIndex, this->connectionId),
         4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset,
-        nccl::gin::internal::getGinWindow(srcWin->ginWins, this->comm.backendIndex, this->connectionId),
+        nccl::gin::internal::getGinWindow(srcWin, this->comm.backendIndex, this->connectionId),
         4096 * size_t(loadConst(&srcWin->ginOffset4K)) + srcOffset, bytes,
         ncclGin_getSignalDescriptor(*this, remoteAction), ncclGin_getSignalOp(remoteAction),
         ncclGin_getSignalOpArg(remoteAction), ncclGin_isCounter(localAction), ncclGin_getCounterId(*this, localAction),
@@ -569,9 +572,9 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
       if (srcWin->numSegments == 1 && dstWin->numSegments == 1) {
         ncclGinCall<ncclGinApi_Put>(
           ctx, ncclCoopThread(), teamRankToGinRank(this->comm, team, peer), /*hasWins=*/true,
-          nccl::gin::internal::getGinWindow(dstWin->ginWins, this->comm.backendIndex, this->connectionId),
+          nccl::gin::internal::getGinWindow(dstWin, this->comm.backendIndex, this->connectionId),
           4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset,
-          nccl::gin::internal::getGinWindow(srcWin->ginWins, this->comm.backendIndex, this->connectionId),
+          nccl::gin::internal::getGinWindow(srcWin, this->comm.backendIndex, this->connectionId),
           4096 * size_t(loadConst(&srcWin->ginOffset4K)) + srcOffset, bytes,
           ncclGin_getSignalDescriptor(*this, remoteAction), ncclGin_getSignalOp(remoteAction),
           ncclGin_getSignalOpArg(remoteAction), ncclGin_isCounter(localAction),
@@ -667,7 +670,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::putValue(
   if (coop.thread_rank() == 0) {
     ncclGinCall<ncclGinApi_PutValue>(
       this->_makeCtx(), ncclCoopThread(), teamRankToGinRank(this->comm, team, peer),
-      nccl::gin::internal::getGinWindow(dstWin->ginWins, this->comm.backendIndex, this->connectionId),
+      nccl::gin::internal::getGinWindow(dstWin, this->comm.backendIndex, this->connectionId),
       4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset, value,
       ncclGin_getSignalDescriptor(*this, remoteAction), ncclGin_getSignalOp(remoteAction),
       ncclGin_getSignalOpArg(remoteAction), ncclGin_isDescriptor(descriptor), ncclGin_getDescriptor(descriptor),
@@ -697,25 +700,25 @@ NCCL_DEVICE_INLINE void ncclGinPutValue_v2(ncclGin_C* net, ncclTeam team, int pe
     if (size == 1) {
       ncclGinCall<ncclGinApi_PutValue>(
         ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer),
-        nccl::gin::internal::getGinWindow(dstWin->ginWins, net->comm.backendIndex, net->connectionId),
+        nccl::gin::internal::getGinWindow(dstWin, net->comm.backendIndex, net->connectionId),
         4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset, (uint8_t)value, signal, signalOp, signalOpArg,
         isDescriptor, descriptor, requiredRelease, givenRelease, optFlags);
     } else if (size == 2) {
       ncclGinCall<ncclGinApi_PutValue>(
         ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer),
-        nccl::gin::internal::getGinWindow(dstWin->ginWins, net->comm.backendIndex, net->connectionId),
+        nccl::gin::internal::getGinWindow(dstWin, net->comm.backendIndex, net->connectionId),
         4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset, (uint16_t)value, signal, signalOp, signalOpArg,
         isDescriptor, descriptor, requiredRelease, givenRelease, optFlags);
     } else if (size == 4) {
       ncclGinCall<ncclGinApi_PutValue>(
         ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer),
-        nccl::gin::internal::getGinWindow(dstWin->ginWins, net->comm.backendIndex, net->connectionId),
+        nccl::gin::internal::getGinWindow(dstWin, net->comm.backendIndex, net->connectionId),
         4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset, (uint32_t)value, signal, signalOp, signalOpArg,
         isDescriptor, descriptor, requiredRelease, givenRelease, optFlags);
     } else {
       ncclGinCall<ncclGinApi_PutValue>(
         ctx, ncclCoopThread(), teamRankToGinRank(net->comm, team, peer),
-        nccl::gin::internal::getGinWindow(dstWin->ginWins, net->comm.backendIndex, net->connectionId),
+        nccl::gin::internal::getGinWindow(dstWin, net->comm.backendIndex, net->connectionId),
         4096 * size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset, value, signal, signalOp, signalOpArg, isDescriptor,
         descriptor, requiredRelease, givenRelease, optFlags);
     }
@@ -995,18 +998,18 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::get(ncclTeam team, int peer
   if (ncclGin_isDeviceOnly(bufType)) {
     ncclGinCall<ncclGinApi_Get>(
       ctx, coop, teamRankToGinRank(this->comm, team, peer),
-      nccl::gin::internal::getGinWindow(remoteWnd->ginWins, this->comm.backendIndex, this->connectionId),
+      nccl::gin::internal::getGinWindow(remoteWnd, this->comm.backendIndex, this->connectionId),
       4096 * size_t(loadConst(&remoteWnd->ginOffset4K)) + remoteOffset,
-      nccl::gin::internal::getGinWindow(localWnd->ginWins, this->comm.backendIndex, this->connectionId),
+      nccl::gin::internal::getGinWindow(localWnd, this->comm.backendIndex, this->connectionId),
       4096 * size_t(loadConst(&localWnd->ginOffset4K)) + localOffset, bytes, ncclGin_isDescriptor(descriptor),
       ncclGin_getDescriptor(descriptor), optFlags);
   } else {
     if (remoteWnd->numSegments == 1 && localWnd->numSegments == 1) {
       ncclGinCall<ncclGinApi_Get>(
         ctx, coop, teamRankToGinRank(this->comm, team, peer),
-        nccl::gin::internal::getGinWindow(remoteWnd->ginWins, this->comm.backendIndex, this->connectionId),
+        nccl::gin::internal::getGinWindow(remoteWnd, this->comm.backendIndex, this->connectionId),
         4096 * size_t(loadConst(&remoteWnd->ginOffset4K)) + remoteOffset,
-        nccl::gin::internal::getGinWindow(localWnd->ginWins, this->comm.backendIndex, this->connectionId),
+        nccl::gin::internal::getGinWindow(localWnd, this->comm.backendIndex, this->connectionId),
         4096 * size_t(loadConst(&localWnd->ginOffset4K)) + localOffset, bytes, ncclGin_isDescriptor(descriptor),
         ncclGin_getDescriptor(descriptor), optFlags);
     } else {
@@ -1047,13 +1050,12 @@ NCCL_DEVICE_INLINE void ncclGinGet(ncclGin_C* net, ncclTeam team, int peer, nccl
   using nccl::gin::internal::teamRankToGinRank;
   coop.sync();
   ncclGinCtx ctx = ncclGin_C_makeCtx(net);
-  ncclGinCall<ncclGinApi_Get>(
-    ctx, coop, teamRankToGinRank(net->comm, team, peer),
-    nccl::gin::internal::getGinWindow(remoteWnd->ginWins, net->comm.backendIndex, net->connectionId),
-    4096 * size_t(loadConst(&remoteWnd->ginOffset4K)) + remoteOffset,
-    nccl::gin::internal::getGinWindow(localWnd->ginWins, net->comm.backendIndex, net->connectionId),
-    4096 * size_t(loadConst(&localWnd->ginOffset4K)) + localOffset, bytes, ncclGin_isDescriptor(descriptor),
-    ncclGin_getDescriptor(descriptor), optFlags);
+  ncclGinCall<ncclGinApi_Get>(ctx, coop, teamRankToGinRank(net->comm, team, peer),
+                              nccl::gin::internal::getGinWindow(remoteWnd, net->comm.backendIndex, net->connectionId),
+                              4096 * size_t(loadConst(&remoteWnd->ginOffset4K)) + remoteOffset,
+                              nccl::gin::internal::getGinWindow(localWnd, net->comm.backendIndex, net->connectionId),
+                              4096 * size_t(loadConst(&localWnd->ginOffset4K)) + localOffset, bytes,
+                              ncclGin_isDescriptor(descriptor), ncclGin_getDescriptor(descriptor), optFlags);
   coop.sync();
 }
 #endif
@@ -1209,7 +1211,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::resetSignal(ncclWindow_t si
   ncclGinSignalDescriptor signal;
   signal.type = NCCL_GIN_SIGNAL_TYPE_VA;
   signal.vaSignal.signalWindow =
-    nccl::gin::internal::getGinWindow(signalWindow->ginWins, this->comm.backendIndex, this->connectionId);
+    nccl::gin::internal::getGinWindow(signalWindow, this->comm.backendIndex, this->connectionId);
   signal.vaSignal.signalOffset = nccl::gin::internal::windowOffsetToGinOffset(signalWindow, signalOffset);
   signal.vaSignal.ncclWindow = signalWindow;
   ncclGinCall<ncclGinApi_ResetSignal>(this->_makeCtx(), signal);

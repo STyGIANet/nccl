@@ -65,8 +65,7 @@ ncclResult_t ncclDevrBuildGinSegmentInfos(struct ncclDevrMemory* mem);
 
 ncclResult_t ncclDevrAllocAndPopulateSegmentWindows(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                     cudaStream_t stream,
-                                                    struct ncclSegmentWindow** outSegmentWindowsDev,
-                                                    ncclGinWindow_t** outSegmentExtraWinsDev);
+                                                    struct ncclSegmentWindow** outSegmentWindowsDev);
 
 ncclResult_t ncclDevrReplaceSegmentWindowsIfNeeded(struct ncclDevrState* devr, struct ncclDevrMemory* mem,
                                                    struct ncclWindow_vidmem* winHost, cudaStream_t stream);

@@ -23,8 +23,6 @@ struct ncclSegmentWindow {
   CUmemLocationType memType;
 };
 
-#define NCCL_GIN_MULTI_SEGMENT_EXTRA_WINS_PER_SEGMENT (NCCL_GIN_MAX_CONNECTIONS * (NCCL_GIN_MAX_ACTIVE_BACKENDS - 1))
-
 // nccl.h has: typedef ncclWindow_vidmem* ncclWindow_t;
 struct ncclWindow_vidmem {
   void* winHost;
@@ -34,11 +32,9 @@ struct ncclWindow_vidmem {
   uint32_t stride4G;
   uint32_t mcOffset4K;
   uint32_t ginOffset4K;
-  ncclGinWindow_t ginWinsLegacy[NCCL_GIN_MAX_CONNECTIONS];
+  ncclGinWindow_t ginWinsDefaultBackend[NCCL_GIN_MAX_CONNECTIONS];
   struct ncclSegmentWindow* ginMultiSegmentWins; // multi-segment: pointer to accommodate variable num segments
   int numSegments;
-  ncclGinWindow_t ginWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS];
-  ncclGinWindow_t* ginMultiSegmentExtraWins;
 };
 
 // Inlined resource-window. A subset of ncclWindow_vidmem with only the fields used
