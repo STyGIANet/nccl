@@ -338,6 +338,10 @@ struct gdaki_context {
   bool needCompanion;
   uint32_t qp_rq_size;
   uint32_t qp_sq_size;
+  struct doca_gpu_verbs_qp_group_list_hl* gqp_group_list;
+  struct doca_gpu_verbs_qp_list_hl* gqp_list;
+  struct doca_gpu_verbs_qp_list_hl* self_gqp_list;
+  struct doca_gpu_verbs_qp_list_hl* self_companion_gqp_list;
   struct doca_gpu_verbs_qp_group_hl** gqp_groups;
   struct doca_gpu_verbs_qp_hl** gqps;
   struct doca_gpu_verbs_qp_hl** companion_gqps;
@@ -579,6 +583,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
   const int ncontexts = nContexts;
   const int nqps_per_rank = ncontexts;
   const int nqps_for_comm = nqps_per_rank * nranks;  // Number of QPs for communication
+  const int nqps_for_comm_this_rank = nqps_for_comm / rankStride;
   const bool needCompanion = (nCounters > 0);
   const int ncompanion_qps = needCompanion ? nqps_for_comm * 2 : 0;  // Number of companion QPs for communication
                                                                       // Double because we connect to self.
@@ -699,20 +704,21 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
     qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
   else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
 
-  for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
+  if (nqps_for_comm_this_rank > 0) {
     if (needCompanion) {
-    retry_create_qp_group_hl:
-      doca_error_t docaStatus = doca_gpu_verbs_create_qp_group_hl(&qp_init_attr, &gdaki_ctx->gqp_groups[qp_idx]);
+    retry_create_qp_group_list_hl:
+      doca_error_t docaStatus =
+        doca_gpu_verbs_create_qp_group_list_hl(&qp_init_attr, nqps_for_comm_this_rank, &gdaki_ctx->gqp_group_list);
       if (docaStatus != DOCA_SUCCESS) {
         if (qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW) {
           qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED;
-          goto retry_create_qp_group_hl;
+          goto retry_create_qp_group_list_hl;
         }
 
         if ((qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED) &&
             ncclParamGinGdakiUseReliableDB() == 2) {
           qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
-          goto retry_create_qp_group_hl;
+          goto retry_create_qp_group_list_hl;
         }
 
         WARN("DOCA Error %d", docaStatus);
@@ -720,30 +726,35 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
         goto out;
       }
 
-      gdaki_ctx->gqps[qp_idx] = &gdaki_ctx->gqp_groups[qp_idx]->qp_main;
-      gdaki_ctx->companion_gqps[qp_idx] = &gdaki_ctx->gqp_groups[qp_idx]->qp_companion;
-
       const char* dbr_opt_str =
         qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW          ? "HW" :
         qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED ? "SW emulation" :
                                                                                                      "disabled";
-      DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
-      DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->companion_gqps[qp_idx]->qp, &qpn_companion), status, out);
-      INFO(NCCL_NET, "[%d] Created a QP group: qp_idx=%d, main_qpn=%#x, companion_qpn=%#x, reliable_db=%s", rank,
-           qp_idx, qpn, qpn_companion, dbr_opt_str);
+
+      for (int qp_idx = rankOff, list_idx = 0; qp_idx < nqps_for_comm; qp_idx += rankStride, list_idx++) {
+        gdaki_ctx->gqp_groups[qp_idx] = &gdaki_ctx->gqp_group_list->qpgs[list_idx];
+        gdaki_ctx->gqps[qp_idx] = &gdaki_ctx->gqp_groups[qp_idx]->qp_main;
+        gdaki_ctx->companion_gqps[qp_idx] = &gdaki_ctx->gqp_groups[qp_idx]->qp_companion;
+
+        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
+        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->companion_gqps[qp_idx]->qp, &qpn_companion), status, out);
+        INFO(NCCL_NET, "[%d] Created a QP group: qp_idx=%d, main_qpn=%#x, companion_qpn=%#x, reliable_db=%s", rank,
+             qp_idx, qpn, qpn_companion, dbr_opt_str);
+      }
     } else {
-    retry_create_qp_hl:
-      doca_error_t docaStatus = doca_gpu_verbs_create_qp_hl(&qp_init_attr, &gdaki_ctx->gqps[qp_idx]);
+    retry_create_qp_list_hl:
+      doca_error_t docaStatus =
+        doca_gpu_verbs_create_qp_list_hl(&qp_init_attr, nqps_for_comm_this_rank, &gdaki_ctx->gqp_list);
       if (docaStatus != DOCA_SUCCESS) {
         if (qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW) {
           qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED;
-          goto retry_create_qp_hl;
+          goto retry_create_qp_list_hl;
         }
 
         if ((qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED) &&
             ncclParamGinGdakiUseReliableDB() == 2) {
           qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
-          goto retry_create_qp_hl;
+          goto retry_create_qp_list_hl;
         }
 
         WARN("DOCA Error %d", docaStatus);
@@ -755,22 +766,38 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
         qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW          ? "HW" :
         qp_init_attr.send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED ? "SW emulation" :
                                                                                                      "disabled";
-      DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
-      INFO(NCCL_NET, "[%d] Created a QP: qp_idx=%d, qpn=%#x, reliable_db=%s", rank, qp_idx, qpn, dbr_opt_str);
+      for (int qp_idx = rankOff, list_idx = 0; qp_idx < nqps_for_comm; qp_idx += rankStride, list_idx++) {
+        gdaki_ctx->gqps[qp_idx] = &gdaki_ctx->gqp_list->qps[list_idx];
+
+        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
+        INFO(NCCL_NET, "[%d] Created a QP: qp_idx=%d, qpn=%#x, reliable_db=%s", rank, qp_idx, qpn, dbr_opt_str);
+      }
     }
   }
 
   qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
-  for (int qp_idx = nqps_for_comm; qp_idx < nqps; qp_idx++) {
-    DOCACHECKGOTO(doca_gpu_verbs_create_qp_hl(&qp_init_attr, &gdaki_ctx->gqps[qp_idx]), status, out);
-    DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
-    INFO(NCCL_NET, "[%d] Created a self-loop peer QP: qp_idx=%d, qpn=%#x", rank, qp_idx, qpn);
+  if (nqps > nqps_for_comm) {
+    DOCACHECKGOTO(doca_gpu_verbs_create_qp_list_hl(&qp_init_attr, nqps - nqps_for_comm, &gdaki_ctx->self_gqp_list),
+                  status, out);
+    for (int qp_idx = nqps_for_comm; qp_idx < nqps; qp_idx++) {
+      gdaki_ctx->gqps[qp_idx] = &gdaki_ctx->self_gqp_list->qps[qp_idx - nqps_for_comm];
+
+      DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
+      INFO(NCCL_NET, "[%d] Created a self-loop peer QP: qp_idx=%d, qpn=%#x", rank, qp_idx, qpn);
+    }
   }
 
-  for (int qp_idx = nqps_for_comm + rankOff; qp_idx < ncompanion_qps; qp_idx += rankStride) {
-    DOCACHECKGOTO(doca_gpu_verbs_create_qp_hl(&qp_init_attr, &gdaki_ctx->companion_gqps[qp_idx]), status, out);
-    DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->companion_gqps[qp_idx]->qp, &qpn_companion), status, out);
-    INFO(NCCL_NET, "[%d] Created a self-loop peer companion QP: qp_idx=%d, qpn=%#x", rank, qp_idx, qpn_companion);
+  if (ncompanion_qps > nqps_for_comm) {
+    DOCACHECKGOTO(doca_gpu_verbs_create_qp_list_hl(&qp_init_attr, nqps_for_comm_this_rank,
+                                                   &gdaki_ctx->self_companion_gqp_list),
+                  status, out);
+    for (int qp_idx = nqps_for_comm + rankOff, list_idx = 0; qp_idx < ncompanion_qps;
+         qp_idx += rankStride, list_idx++) {
+      gdaki_ctx->companion_gqps[qp_idx] = &gdaki_ctx->self_companion_gqp_list->qps[list_idx];
+
+      DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->companion_gqps[qp_idx]->qp, &qpn_companion), status, out);
+      INFO(NCCL_NET, "[%d] Created a self-loop peer companion QP: qp_idx=%d, qpn=%#x", rank, qp_idx, qpn_companion);
+    }
   }
 
   for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
@@ -955,32 +982,21 @@ out:
         }
       }
 
-      if (needCompanion) {
-        for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
-          if (gdaki_ctx->gqp_groups[qp_idx]) {
-            doca_gpu_verbs_destroy_qp_group_hl(gdaki_ctx->gqp_groups[qp_idx]);
-            gdaki_ctx->gqp_groups[qp_idx] = nullptr;
-          }
-        }
-      } else {
-        for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
-          if (gdaki_ctx->gqps[qp_idx]) {
-            doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->gqps[qp_idx]);
-            gdaki_ctx->gqps[qp_idx] = nullptr;
-          }
-        }
+      if (gdaki_ctx->gqp_group_list) {
+        doca_gpu_verbs_destroy_qp_group_list_hl(gdaki_ctx->gqp_group_list);
+        gdaki_ctx->gqp_group_list = nullptr;
       }
-      for (int qp_idx = nqps_for_comm; qp_idx < nqps; qp_idx++) {
-        if (gdaki_ctx->gqps[qp_idx]) {
-          doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->gqps[qp_idx]);
-          gdaki_ctx->gqps[qp_idx] = nullptr;
-        }
+      if (gdaki_ctx->gqp_list) {
+        doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->gqp_list);
+        gdaki_ctx->gqp_list = nullptr;
       }
-      for (int qp_idx = nqps_for_comm + rankOff; qp_idx < ncompanion_qps; qp_idx += rankStride) {
-        if (gdaki_ctx->companion_gqps[qp_idx]) {
-          doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->companion_gqps[qp_idx]);
-          gdaki_ctx->companion_gqps[qp_idx] = nullptr;
-        }
+      if (gdaki_ctx->self_gqp_list) {
+        doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_gqp_list);
+        gdaki_ctx->self_gqp_list = nullptr;
+      }
+      if (gdaki_ctx->self_companion_gqp_list) {
+        doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_companion_gqp_list);
+        gdaki_ctx->self_companion_gqp_list = nullptr;
       }
 
       if (gdaki_ctx->gqp_groups) free(gdaki_ctx->gqp_groups);
@@ -1024,15 +1040,8 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
   struct ncclGinIbCollComm* cComm = gdaki_ctx->collComm;
   const int nranks = cComm->nranks;
   const int ncontexts = gdaki_ctx->nContexts;
-  const int nqps_per_rank = ncontexts;
-  const int nqps_for_comm = nqps_per_rank * nranks;  // Number of QPs for communication
   const int rankStride = gdaki_ctx->rankStride;
   const int rankOff = gdaki_ctx->rank % rankStride;
-  const bool needCompanion = gdaki_ctx->needCompanion;
-  const int ncompanion_qps = needCompanion ? nqps_for_comm * 2 : 0;  // Number of companion QPs for communication
-                                                                      // Double because we connect to self.
-  const int nqps = nqps_per_rank * (nranks + 1);  // +1 for the local rank.
-                                   // The last group is the responder of the local rank.
 
   if (gdaki_ctx->gin_gdaki_gpu_ctx_host_staging) {
     struct doca_gpu_verbs_qp** gverbs_qps =
@@ -1067,24 +1076,21 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
     gdaki_ctx->gin_gdaki_gpu_ctx_hd_mhandle = nullptr;
   }
 
-  if (needCompanion) {
-    for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
-      DOCACHECK(doca_gpu_verbs_destroy_qp_group_hl(gdaki_ctx->gqp_groups[qp_idx]));
-      gdaki_ctx->gqp_groups[qp_idx] = nullptr;
-    }
-  } else {
-    for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
-      DOCACHECK(doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->gqps[qp_idx]));
-      gdaki_ctx->gqps[qp_idx] = nullptr;
-    }
+  if (gdaki_ctx->gqp_group_list) {
+    DOCACHECK(doca_gpu_verbs_destroy_qp_group_list_hl(gdaki_ctx->gqp_group_list));
+    gdaki_ctx->gqp_group_list = nullptr;
   }
-  for (int qp_idx = nqps_for_comm; qp_idx < nqps; qp_idx++) {
-    DOCACHECK(doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->gqps[qp_idx]));
-    gdaki_ctx->gqps[qp_idx] = nullptr;
+  if (gdaki_ctx->gqp_list) {
+    DOCACHECK(doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->gqp_list));
+    gdaki_ctx->gqp_list = nullptr;
   }
-  for (int qp_idx = nqps_for_comm + rankOff; qp_idx < ncompanion_qps; qp_idx += rankStride) {
-    DOCACHECK(doca_gpu_verbs_destroy_qp_hl(gdaki_ctx->companion_gqps[qp_idx]));
-    gdaki_ctx->companion_gqps[qp_idx] = nullptr;
+  if (gdaki_ctx->self_gqp_list) {
+    DOCACHECK(doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_gqp_list));
+    gdaki_ctx->self_gqp_list = nullptr;
+  }
+  if (gdaki_ctx->self_companion_gqp_list) {
+    DOCACHECK(doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_companion_gqp_list));
+    gdaki_ctx->self_companion_gqp_list = nullptr;
   }
 
   if (gdaki_ctx->gqp_groups) free(gdaki_ctx->gqp_groups);
