@@ -212,7 +212,7 @@ ncclResult_t ncclGinPickBackendBasedOnReqs(struct ncclGinState* ginState, struct
 
   if (reqs->ginType >= NCCL_GIN_MAX_TYPES) {
     WARN("Invalid GIN type requested (%d)", reqs->ginType);
-    return ncclInternalError;
+    return ncclInvalidUsage;
   }
 
   for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
@@ -229,7 +229,7 @@ ncclResult_t ncclGinPickBackendBasedOnReqs(struct ncclGinState* ginState, struct
   }
 
   WARN("No active GIN backend matches requested ginType (%d) with required signals.", reqs->ginType);
-  return ncclInternalError;
+  return ncclInvalidUsage;
 }
 
 ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequirements const* reqs,
