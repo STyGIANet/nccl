@@ -90,7 +90,7 @@ __device__ static __forceinline__ uint64_t *doca_gpu_dev_verbs_get_proxy_ready_p
 template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode =
               DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           enum doca_gpu_dev_verbs_qp_type qp_type = DOCA_GPUNETIO_VERBS_QP_SQ,
-          enum doca_gpu_dev_verbs_cq_type cq_type = DOCA_GPUNETIO_VERBS_CQ_64B>
+          enum doca_gpu_dev_verbs_cq_type cq_type = DOCA_GPUNETIO_VERBS_CQ_UNKNOWN>
 __device__ static __forceinline__ void doca_gpu_dev_verbs_wait_until_slot_available(
     struct doca_gpu_dev_verbs_qp *qp, uint64_t wqe_idx) {
     const uint16_t nwqes = doca_gpu_dev_verbs_load_const(&qp->sq_wqe_num);
@@ -109,7 +109,7 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_wait_until_slot_availa
 template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode =
               DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
           enum doca_gpu_dev_verbs_qp_type qp_type = DOCA_GPUNETIO_VERBS_QP_SQ,
-          enum doca_gpu_dev_verbs_cq_type cq_type = DOCA_GPUNETIO_VERBS_CQ_64B>
+          enum doca_gpu_dev_verbs_cq_type cq_type = DOCA_GPUNETIO_VERBS_CQ_UNKNOWN>
 __device__ static __forceinline__ uint64_t
 doca_gpu_dev_verbs_reserve_wq_slots(struct doca_gpu_dev_verbs_qp *qp, uint32_t count,
                                     uint32_t code_opt = DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT) {

@@ -559,10 +559,16 @@ doca_error_t doca_verbs_cq_attr_set_external_dbr_umem(doca_verbs_cq_attr_t *cq_a
     }
 
     if (cq_attr->type == DOCA_VERBS_SDK_LIB_TYPE_SDK) {
-        DOCA_LOG(
-            LOG_ERR,
-            "Failed to set external_dbr_umem: SDK does not support setting external DBR UMEM.");
-        return DOCA_ERROR_INVALID_VALUE;
+        auto err = doca_verbs_sdk_wrapper_cq_attr_set_external_dbr_umem(
+            cq_attr->sdk, external_dbr_umem, external_dbr_umem_offset);
+        if (err == DOCA_SDK_WRAPPER_SUCCESS) {
+            return DOCA_SUCCESS;
+        } else if (err == DOCA_SDK_WRAPPER_API_ERROR) {
+            DOCA_LOG(LOG_INFO, "DOCA SDK function returned an error", __func__);
+            return DOCA_ERROR_UNEXPECTED;
+        } else if (err == DOCA_SDK_WRAPPER_NOT_SUPPORTED) {
+            return DOCA_ERROR_NOT_SUPPORTED;
+        }
     }
 
     if (cq_attr->open == nullptr) {

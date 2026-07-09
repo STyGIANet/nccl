@@ -66,6 +66,8 @@ doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_cq_attr_set_cq_context(void *cq_
                                                                        void *cq_context);
 doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_cq_attr_set_external_umem(
     void *cq_attr, doca_verbs_umem_t *external_umem, uint64_t external_umem_offset);
+doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_cq_attr_set_external_dbr_umem(
+    void *cq_attr, doca_verbs_umem_t *external_dbr_umem, uint64_t external_dbr_umem_offset);
 doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_cq_attr_set_external_uar(
     void *cq_attr, doca_verbs_uar_t *external_uar);
 doca_sdk_wrapper_error_t doca_verbs_sdk_wrapper_cq_attr_set_cq_overrun(
