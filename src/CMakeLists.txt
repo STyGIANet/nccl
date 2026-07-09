@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# See LICENSE.txt for more license information
+
 # Source files
 set(LIBSRCFILES
     bootstrap.cc
@@ -45,6 +50,7 @@ add_subdirectory(graph)
 if (NCCL_OS_LINUX)
 add_subdirectory(plugin)
 add_subdirectory(ras)
+add_subdirectory(diagnostics)
 endif()
 
 add_subdirectory(device)
@@ -87,7 +93,7 @@ list(APPEND LIBSRCFILES
 # Add GIN sources only on Linux
 if(NCCL_OS_LINUX)
     list(APPEND LIBSRCFILES ${GIN_SOURCES})
-    list(APPEND LIBSRCFILES diagnostics.cc)
+    list(APPEND LIBSRCFILES diagnostics.cc ${DIAGNOSTICS_SOURCES})
 endif()
 
 ###################### Create a shared NCCL library ############################
@@ -98,6 +104,9 @@ if(NCCL_OS_WINDOWS)
     target_link_libraries(nccl PRIVATE nccl_device)
 else()
     target_sources(nccl PRIVATE $<TARGET_OBJECTS:nccl_device>)
+endif()
+if(NCCL_OS_LINUX)
+    target_sources(nccl PRIVATE $<TARGET_OBJECTS:nccl_diagnostics_device>)
 endif()
 
 # Include directories; add DOCA only on non-Windows (skip for Windows platform)
@@ -166,6 +175,9 @@ add_custom_target(nccl_header DEPENDS ${NCCL_HEADER_DEPS})
 
 add_dependencies(nccl nccl_header)
 add_dependencies(nccl_device nccl_header)
+if(NCCL_OS_LINUX)
+    add_dependencies(nccl_diagnostics_device nccl_header)
+endif()
 
 # Set version and output name
 # On Windows, use nccl.dll/nccl.lib (no "lib" prefix) so the import library matches what linkers expect
@@ -297,6 +309,9 @@ if(NCCL_OS_WINDOWS)
     target_link_libraries(nccl_static PRIVATE nccl_device)
 else()
     target_sources(nccl_static PRIVATE $<TARGET_OBJECTS:nccl_device>)
+endif()
+if(NCCL_OS_LINUX)
+    target_sources(nccl_static PRIVATE $<TARGET_OBJECTS:nccl_diagnostics_device>)
 endif()
 
 # Include directories

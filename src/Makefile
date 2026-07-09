@@ -49,7 +49,7 @@ BINSRCFILES := ras/client.cc
 PARAMBINSRCFILES := param/ncclparam.cc
 
 ifeq ($(NCCL_OS_LINUX), 1)
-	LIBSRCFILES += os/linux.cc os/linux_ipcsocket.cc os/linux_socket_pair.cc diagnostics.cc
+	LIBSRCFILES += os/linux.cc os/linux_ipcsocket.cc os/linux_socket_pair.cc diagnostics.cc $(wildcard diagnostics/*.cc)
 else ifeq ($(NCCL_OS_WINDOWS), 1)
 	LIBSRCFILES += os/windows.cc os/windows_ipcsocket.cc os/windows_socket_pair.cc
 endif
@@ -95,6 +95,11 @@ LDFLAGS    += -L${CUDA_LIB} -l$(CUDARTLIB) -lpthread -lrt -ldl
 INCPLUGIN  := include/plugin
 
 DEVMANIFEST := $(BUILDDIR)/obj/device/manifest
+DIAG_DEVMANIFEST := $(BUILDDIR)/obj/diagnostics/device/manifest
+DEVMANIFESTS := $(DEVMANIFEST)
+ifeq ($(NCCL_OS_LINUX), 1)
+DEVMANIFESTS += $(DIAG_DEVMANIFEST)
+endif
 
 
 GIT_VERSION_FILE := $(OBJDIR)/include/nccl_git_version.h
@@ -132,6 +137,9 @@ binary : $(BINDIR)/$(BINNAME) $(BINDIR)/$(PARAMBIN)
 $(DEVMANIFEST): ALWAYS_REBUILD $(INCTARGETS)
 	$(MAKE) -C ./device
 
+$(DIAG_DEVMANIFEST): ALWAYS_REBUILD $(INCTARGETS)
+	$(MAKE) -C ./diagnostics/device
+
 # Empty target to force rebuild
 .PHONY: ALWAYS_REBUILD
 
@@ -150,19 +158,19 @@ $(INCDIR)/nccl.h : nccl.h.in ../makefiles/version.mk
 	    -e "s/\$${nccl:Version}/$(NCCL_VERSION)/g" \
 	    $< > $@
 
-# Device objs (from device/Makefile manifest, incl. common.cu.o) are linked in so libnccl.so contains
+# Device objs (from device manifests, incl. common.cu.o) are linked in so libnccl.so contains
 # device code (e.g. ncclGin_BackendMask<...>) that tests resolve when linking with -lnccl.
-$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFEST)
+$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFESTS)
 	@printf "Linking    %-35s > %s\n" $(LIBTARGET) $@
 	mkdir -p $(LIBDIR)
-	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFEST)) $(LDFLAGS) -Wl,--version-script=libnccl.map
+	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFESTS)) $(LDFLAGS) -Wl,--version-script=libnccl.map
 	ln -sf $(LIBSONAME) $(LIBDIR)/$(LIBNAME)
 	ln -sf $(LIBTARGET) $(LIBDIR)/$(LIBSONAME)
 
-$(LIBDIR)/$(STATICLIBTARGET): $(LIBOBJ) $(DEVMANIFEST)
+$(LIBDIR)/$(STATICLIBTARGET): $(LIBOBJ) $(DEVMANIFESTS)
 	@printf "Archiving  %-35s > %s\n" $(STATICLIBTARGET) $@
 	mkdir -p $(LIBDIR)
-	ar cr $@ $(LIBOBJ) $$(cat $(DEVMANIFEST))
+	ar cr $@ $(LIBOBJ) $$(cat $(DEVMANIFESTS))
 
 $(BINDIR)/$(BINNAME): $(BINOBJ)
 	@printf "Linking    %-35s > %s\n" $(BINNAME) $@
@@ -292,6 +300,7 @@ $(DOCA_OBJDIR)/%.o : $(DOCA_HOME)/src/%.cpp
 
 clean :
 	$(MAKE) -C device clean
+	$(MAKE) -C diagnostics/device clean
 	rm -rf ${BINDIR} ${INCDIR} ${LIBDIR} ${PKGDIR} ${OBJDIR}
 
 install : build

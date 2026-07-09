@@ -14,6 +14,7 @@
 
 #include <stdlib.h>
 #include "diagnostics_log.h"
+#include "diagnostics/p2p.h"
 #include "graph.h"
 #include "graph/topo.h"
 #include "param.h"
@@ -105,20 +106,21 @@ fail:
 ncclResult_t ncclRunDiagnosticsActive(struct ncclComm* comm) {
   auto t0 = std::chrono::steady_clock::now();
 
-  if (comm->rank == 0) DIAG_PRINT("NCCL DIAG === NCCL Diagnostics (active) ===");
+  if (comm->rank == 0) DIAG_PRINT("NCCL DIAG === NCCL Diagnostics ===");
 
   ncclResult_t r;
   unsigned int transportMask = 0;
   r = ncclDiagDetectTransportMask(comm, &transportMask);
-  if (r != ncclSuccess) INFO(NCCL_INIT, "Diagnostics: transport detect returned %d", r);
+  if (comm->rank == 0 && r != ncclSuccess) DIAG_PRINT("NCCL DIAG [INFO] transport detect returned %d", r);
 
-  // TODO: Run sync checks here!
+  r = ncclDiagP2pRun(comm);
+  if (comm->rank == 0 && r != ncclSuccess) DIAG_PRINT("NCCL DIAG [INFO] p2p: active check returned %d", r);
 
   auto t1 = std::chrono::steady_clock::now();
   double elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
   if (comm->rank == 0) {
-    DIAG_PRINT("NCCL DIAG completed in %.1f ms across %d ranks", elapsedMs, comm->nRanks);
+    DIAG_PRINT("NCCL DIAG NCCL diagnostics completed in %.1f ms across %d ranks", elapsedMs, comm->nRanks);
   }
 
   return ncclSuccess;

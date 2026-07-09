@@ -346,10 +346,10 @@ ncclResult_t rasDiagnosticsResume(struct rasClient* client) {
   // A comm-scoped request reports the communicator's rank count; an unscoped one falls back to responding peers.
   nRanks = diagnostics->ctx.hasCommFilter ? diagnostics->ctx.commNRanks : coll->nPeers;
 
-  (void)diagnostics->reporter.emit(diagnostics->reporter.target, "=== NCCL Diagnostics (passive) ===");
+  if (!client->internal) (void)diagnostics->reporter.emit(diagnostics->reporter.target, "=== RAS Diagnostics ===");
   ret = rasDiagnosticsSummarizePeerPayloads(&diagnostics->ctx, &diagnostics->reporter, coll->data, coll->nData);
   if (ret != ncclSuccess) WARN("RAS diagnostics summary returned %d", ret);
-  snprintf(line, sizeof(line), "completed in %.1f ms across %d %s",
+  snprintf(line, sizeof(line), "RAS diagnostics completed in %.1f ms across %d %s",
            (double)(clockNano() - coll->startTime) / (CLOCK_UNITS_PER_SEC / 1000), nRanks,
            diagnostics->ctx.hasCommFilter ? "ranks" : "RAS peers");
   (void)diagnostics->reporter.emit(diagnostics->reporter.target, line);

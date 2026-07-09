@@ -13,6 +13,7 @@
 #include "alloc.h"
 #include "checks.h"
 #include "comm.h"
+#include "diagnostics_log.h"
 #include "diagnostics.h"
 #include "nccl.h"
 #include "param/param.h"
@@ -189,7 +190,7 @@ ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
   return ncclSuccess;
 }
 
-// Requests the RAS thread to run passive diagnostics for this communicator.
+// Requests the RAS thread to run RAS diagnostics for this communicator.
 ncclResult_t ncclRunDiagnosticsPassive(struct ncclComm* comm) {
   struct rasNotification msg;
   ncclResult_t ret = ncclSuccess;
@@ -197,12 +198,15 @@ ncclResult_t ncclRunDiagnosticsPassive(struct ncclComm* comm) {
   memset(&msg, '\0', sizeof(msg));
   msg.type = RAS_RUN_DIAG;
   ret = rasDiagnosticsContextInit(&msg.runDiag.ctx, comm);
-  if (ret == ncclSuccess) ret = rasLocalNotify(&msg);
+  if (ret == ncclSuccess) {
+    if (comm != nullptr && comm->rank == 0) DIAG_PRINT("NCCL DIAG === RAS Diagnostics ===");
+    ret = rasLocalNotify(&msg);
+  }
   if (ret != ncclSuccess) {
     if (comm != nullptr) {
-      INFO(NCCL_RAS, "RAS passive diagnostics trigger returned %d for comm 0x%lx", ret, comm->commHash);
+      INFO(NCCL_RAS, "RAS diagnostics trigger returned %d for comm 0x%lx", ret, comm->commHash);
     } else {
-      INFO(NCCL_RAS, "RAS passive diagnostics trigger returned %d", ret);
+      INFO(NCCL_RAS, "RAS diagnostics trigger returned %d", ret);
     }
   }
   return ret;
