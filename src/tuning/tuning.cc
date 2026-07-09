@@ -297,9 +297,9 @@ ncclResult_t ncclTuningCompute(struct ncclTuningInput_t* const input, struct ncc
     char ncclAlgoEnvStr[1024] = "";
     char ncclProtoEnvStr[1024] = "";
     char ncclSymKernelIdEnvStr[1024] = "";
-    const char* symKernelIdEnv = ncclGetEnv("NCCL_SYM_KERNEL_ID");
+    const char* symKernelIdEnv = ncclGetEnv("NCCL_SYM_KERNEL");
     if (symKernelIdEnv) {
-      snprintf(ncclSymKernelIdEnvStr, 1023, " NCCL_SYM_KERNEL_ID was set to %s.", symKernelIdEnv);
+      snprintf(ncclSymKernelIdEnvStr, 1023, " NCCL_SYM_KERNEL was set to %s.", symKernelIdEnv);
     }
     const char* algoEnv = ncclGetEnv("NCCL_ALGO");
     if (algoEnv) {
