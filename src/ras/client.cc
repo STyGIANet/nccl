@@ -15,7 +15,9 @@
 
 #include "os.h"
 #include "nccl.h"
+#ifndef NCCL_RAS_CLIENT
 #define NCCL_RAS_CLIENT // Only pull client-specific definitions from the header file below.
+#endif
 #include "ras_internal.h"
 
 #define STR2(v) #v
