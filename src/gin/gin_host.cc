@@ -445,8 +445,7 @@ ncclResult_t ncclGinHostFinalize(struct ncclComm* comm) {
 ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
                              void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
                              ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS * NCCL_GIN_MAX_ACTIVE_BACKENDS],
-                             ncclGinWindow_t ginDevWinsLegacy[NCCL_GIN_MAX_CONNECTIONS], int winFlags,
-                             bool multiSegment, int memType) {
+                             int winFlags, bool multiSegment, int memType) {
   struct ncclGinState* ginState = &comm->sharedRes->ginState;
   int mrFlags = (winFlags & NCCL_WIN_STRICT_ORDERING) ? NCCL_NET_MR_FLAG_FORCE_SO : 0;
   for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
@@ -469,10 +468,6 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
         WARN("rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
         return ncclSystemError;
       }
-    }
-    // Populate legacy field with the first (default) backend's windows for backward compat
-    if (backendIdx == 0) {
-      memcpy(ginDevWinsLegacy, ginDevWins, sizeof(ncclGinWindow_t) * backend->ginCommCount);
     }
   }
   return ncclSuccess;

@@ -546,8 +546,7 @@ static ncclResult_t symMemoryRegisterGin(struct ncclComm* comm, struct ncclDevrM
     int ptrType = (cuMemLocType == CU_MEM_LOCATION_TYPE_HOST_NUMA) ? NCCL_PTR_HOST : NCCL_PTR_CUDA;
     NCCLCHECKGOTO(ncclGinRegister(comm, (char*)mem->primaryAddr + offset, mem->ginSegmentInfos[segment].segmentSize,
                                   mem->ginSegmentInfos[segment].ginHostWins, mem->ginSegmentInfos[segment].ginDevWins,
-                                  mem->ginSegmentInfos[segment].ginDevWins, mem->winFlags,
-                                  mem->maxGlobalNumSegments > 1, ptrType),
+                                  mem->winFlags, mem->maxGlobalNumSegments > 1, ptrType),
                   ret, fail);
     numSegmentsRegistered++;
     offset += mem->ginSegmentInfos[segment].segmentSize;
