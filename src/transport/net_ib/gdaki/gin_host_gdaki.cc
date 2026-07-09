@@ -365,6 +365,8 @@ struct gdaki_context {
   ncclNetDeviceHandle_t* devHandle;
   int nContexts;
   int rankStride;
+
+  doca_gpu_net_event_t docaEvent;
 };
 
 static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_context* gdaki_ctx,
@@ -579,6 +581,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
     return ncclInternalError;
   }
   const int rankOff = rank % rankStride;
+  const int connectedNRanks = nranks / rankStride;
 
   const int ncontexts = nContexts;
   const int nqps_per_rank = ncontexts;
@@ -608,6 +611,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
   bool need_cpu_proxy = false;
 
   struct doca_gpu_verbs_qp** gverbs_qps = nullptr;
+  struct doca_gpu_verbs_qp** contiguous_gverbs_qps = nullptr;
 
   GdakiHostGPUMemHandle<char>* gin_gdaki_gpu_ctx_hd_mhandle = new GdakiHostGPUMemHandle<char>();
   GdakiGlobalGPUBufferTable<uint64_t>* counters_table = new GdakiGlobalGPUBufferTable<uint64_t>();
@@ -688,6 +692,14 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
   NCCLCHECKGOTO(wrap_ibv_query_gid(cComm->ib.context, 1, ib_gid_index, &gdaki_ctx->rgid), status, out);
 
   DOCACHECKGOTO(doca_verbs_dev_open(cComm->ib.pd, &gdaki_ctx->ndev), status, out);
+  {
+    doca_error_t docaStatus = doca_gpu_net_event_create(gdaki_ctx->ndev, &gdaki_ctx->docaEvent);
+    if (docaStatus == DOCA_ERROR_NOT_SUPPORTED) {
+      INFO(NCCL_NET, "doca_gpu_net_event_create not supported, falling back to polling-based errors");
+      docaStatus = DOCA_SUCCESS;
+    }
+    DOCACHECKGOTO(docaStatus, status, out);
+  }
   NCCLCHECKGOTO(gdakiCreateVerbsAh(gdaki_ctx, ib_sl, ib_tc, ib_gid_index), status, out);
 
   gdaki_ctx->qp_rq_size = 0;
@@ -881,27 +893,46 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
   NCCLCHECKGOTO(ncclCudaCalloc(&gdaki_ctx->last_visible_get, ncontexts * nranks, NULL), status, out);
 
   gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(nranks, sizeof(struct doca_gpu_verbs_qp*));
+  EQCHECKGOTO(gverbs_qps, nullptr, status, out);
+
+  contiguous_gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(connectedNRanks, sizeof(struct doca_gpu_verbs_qp*));
+  EQCHECKGOTO(contiguous_gverbs_qps, nullptr, status, out);
+
   for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
     struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
 
     unsigned int buffer_start;
+    unsigned int contiguous_qp_idx = 0;
     for (int qp_idx = 0; qp_idx < nranks; qp_idx++) {
       if (qp_idx % rankStride != rankOff) continue;
       gverbs_qps[qp_idx] = gdaki_ctx->gqps[(ctx_idx * nranks) + qp_idx]->qp_gverbs;
+      contiguous_gverbs_qps[contiguous_qp_idx] = gverbs_qps[qp_idx];
+      ++contiguous_qp_idx;
       need_cpu_proxy |= (gverbs_qps[qp_idx]->cpu_proxy);
     }
     DOCACHECKGOTO(doca_gpu_verbs_export_multi_qps_dev(gdaki_ctx->gdev, gverbs_qps, nranks, &gin_gdaki_gpu_ctx->gdqp),
                   status, out);
+    if (gdaki_ctx->docaEvent) {
+      DOCACHECKGOTO(doca_gpu_net_event_subscribe(gdaki_ctx->docaEvent, contiguous_gverbs_qps, connectedNRanks), status,
+                    out);
+    }
 
     if (needCompanion) {
+      contiguous_qp_idx = 0;
       for (int qp_idx = 0; qp_idx < nranks; qp_idx++) {
         if (qp_idx % rankStride != rankOff) continue;
         gverbs_qps[qp_idx] = gdaki_ctx->companion_gqps[(ctx_idx * nranks) + qp_idx]->qp_gverbs;
+        contiguous_gverbs_qps[contiguous_qp_idx] = gverbs_qps[qp_idx];
+        ++contiguous_qp_idx;
         need_cpu_proxy |= (gverbs_qps[qp_idx]->cpu_proxy);
       }
       DOCACHECKGOTO(doca_gpu_verbs_export_multi_qps_dev(gdaki_ctx->gdev, gverbs_qps, nranks,
                                                         &gin_gdaki_gpu_ctx->companion_gdqp),
                     status, out);
+      if (gdaki_ctx->docaEvent) {
+        DOCACHECKGOTO(doca_gpu_net_event_subscribe(gdaki_ctx->docaEvent, contiguous_gverbs_qps, connectedNRanks),
+                      status, out);
+      }
     } else {
       gin_gdaki_gpu_ctx->companion_gdqp = nullptr;
     }
@@ -958,6 +989,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
 out:
   if (status != ncclSuccess) {
     if (gdaki_ctx) {
+      if (gdaki_ctx->docaEvent) {
+        doca_gpu_net_event_destroy(gdaki_ctx->docaEvent);
+        gdaki_ctx->docaEvent = nullptr;
+      }
       // Clean up any allocated GPU memory
       if (gdaki_ctx->gin_gdaki_gpu_ctx_host_staging) {
         for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
@@ -1029,6 +1064,7 @@ out:
   if (remote_exch_info) free(remote_exch_info);
 
   if (gverbs_qps) free(gverbs_qps);
+  if (contiguous_gverbs_qps) free(contiguous_gverbs_qps);
 
   return status;
 }
@@ -1042,6 +1078,11 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
   const int ncontexts = gdaki_ctx->nContexts;
   const int rankStride = gdaki_ctx->rankStride;
   const int rankOff = gdaki_ctx->rank % rankStride;
+
+  if (gdaki_ctx->docaEvent) {
+    doca_gpu_net_event_destroy(gdaki_ctx->docaEvent);
+    gdaki_ctx->docaEvent = nullptr;
+  }
 
   if (gdaki_ctx->gin_gdaki_gpu_ctx_host_staging) {
     struct doca_gpu_verbs_qp** gverbs_qps =
@@ -1236,8 +1277,7 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
-  struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
+static ncclResult_t ncclGinGdakiQueryLastErrorPolling(struct gdaki_context* gdakiCtx, bool* hasError) {
   bool hasError_ = false;
   const int ncontexts = gdakiCtx->nContexts;
   const int nranks = gdakiCtx->collComm->nranks;
@@ -1246,16 +1286,10 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
   const int nqpsPerRank = ncontexts;
   const int nqpsForComm = nqpsPerRank * nranks;  // Number of QPs for communication
 
-  // We throttle the frequency of these queries since they can easily take 250us.
-  uint64_t now = clockNano();
-  if ((now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
-    goto exit;
-  }
-  gdakiCtx->last_error_query_time = now;
-
-  for (int qpIdx = rankOff; qpIdx < nqpsForComm; qpIdx += rankStride) {
+  for (int qpIdx = rankOff; qpIdx < nqpsForComm; qpIdx++) {
     struct doca_gpu_verbs_qp* qp = gdakiCtx->gqps[qpIdx]->qp_gverbs;
     struct doca_gpu_verbs_qp_error_info errorInfo;
+
     DOCACHECK(doca_gpu_verbs_query_last_error(qp, &errorInfo));
     hasError_ |= errorInfo.has_error;
     if (hasError_) break;
@@ -1267,7 +1301,44 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
       if (hasError_) break;
     }
   }
-exit:
+
   *hasError = hasError_;
   return ncclSuccess;
+}
+
+static ncclResult_t ncclGinGdakiQueryLastErrorEvent(struct gdaki_context* gdakiCtx, bool* hasError) {
+  bool hasError_ = false;
+  struct doca_gpu_verbs_qp* eventQp = nullptr;
+  DOCACHECK(doca_gpu_net_event_get(gdakiCtx->docaEvent, &eventQp));
+  if (eventQp) {
+    struct doca_gpu_verbs_qp_error_info errorInfo;
+    DOCACHECK(doca_gpu_verbs_query_last_error(eventQp, &errorInfo));
+    hasError_ = errorInfo.has_error;
+  }
+
+  *hasError = hasError_;
+  return ncclSuccess;
+}
+
+ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+  ncclResult_t status = ncclSuccess;
+  struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
+  bool hasError_ = false;
+
+  // We throttle the frequency of these queries since they can easily take 250us.
+  uint64_t now = clockNano();
+  if ((now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
+    goto exit;
+  }
+  gdakiCtx->last_error_query_time = now;
+
+  if (gdakiCtx->docaEvent) {
+    NCCLCHECKGOTO(ncclGinGdakiQueryLastErrorEvent(gdakiCtx, &hasError_), status, exit);
+  } else {
+    NCCLCHECKGOTO(ncclGinGdakiQueryLastErrorPolling(gdakiCtx, &hasError_), status, exit);
+  }
+
+exit:
+  *hasError = hasError_;
+  return status;
 }
