@@ -136,10 +136,6 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
     }
 
     backend->ginCommCount = nLocalGinDevs;
-    if (backend->ginVersion < 13) {
-      // We only support one context per connection, so we better create as many connections as possible.
-      backend->ginCommCount = NCCL_GIN_MAX_CONNECTIONS;
-    }
 
     if (ncclParamGinNconnections() != -2) backend->ginCommCount = ncclParamGinNconnections();
     backend->ginCommCount = std::min<int>(NCCL_GIN_MAX_CONNECTIONS, backend->ginCommCount);
@@ -252,9 +248,6 @@ ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequir
 
   // Allocate contexts
   int nContextsTotal = reqs->ginContextCount;
-  if (backend->ginVersion < 13) {
-    nContextsTotal = backend->ginCommCount;
-  }
   devComm->ginContextCount = nContextsTotal;
   devComm->ginConnectionCount = backend->ginCommCount;
   if (!reqs->ginExclusiveContexts) {

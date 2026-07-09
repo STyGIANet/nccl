@@ -32,7 +32,6 @@ struct ncclGinBackendState {
   int ginCommCount;
   void* ginComms[NCCL_GIN_MAX_CONNECTIONS];
   ncclNetProperties_t ginProps[NCCL_GIN_MAX_CONNECTIONS];
-  int ginVersion;
   bool supportsStrongSignals;
   bool supportsVASignals;
 };
