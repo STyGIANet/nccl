@@ -211,31 +211,27 @@ ncclResult_t ncclGinValidateSignalRequest(struct ncclDevCommRequirements const* 
 
 ncclResult_t ncclGinPickBackendBasedOnReqs(struct ncclGinState* ginState, struct ncclDevCommRequirements const* reqs,
                                            struct ncclGinBackendState** backend) {
-  if (ginState->numActiveBackends == 0) {
-    WARN("No active GIN Backends");
-    return ncclInternalError;
-  }
+  *backend = NULL;
 
   if (reqs->ginType >= NCCL_GIN_MAX_TYPES) {
     WARN("Invalid GIN type requested (%d)", reqs->ginType);
     return ncclInternalError;
   }
 
-  if (NCCL_GIN_TYPE_NONE == reqs->ginType) {
-    *backend = &ginState->backends[0];
-    return ncclGinValidateSignalRequest(reqs, *backend);
-  }
-
   for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
-    struct ncclGinBackendState* backend_tmp = &ginState->backends[backendIdx];
+    struct ncclGinBackendState* candidate = &ginState->backends[backendIdx];
 
-    if (backend_tmp->ginType == reqs->ginType) {
-      *backend = backend_tmp;
-      return ncclGinValidateSignalRequest(reqs, *backend);
+    if (ncclSuccess != ncclGinValidateSignalRequest(reqs, candidate)) {
+      continue;
+    }
+
+    if (reqs->ginType == NCCL_GIN_TYPE_NONE || reqs->ginType == candidate->ginType) {
+      *backend = candidate;
+      return ncclSuccess;
     }
   }
 
-  WARN("Requested ginType (%d) not found in loaded backends.", reqs->ginType);
+  WARN("No active GIN backend matches requested ginType (%d) with required signals.", reqs->ginType);
   return ncclInternalError;
 }
 

@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "dev_runtime.h"
+#include "comm.h"
 
 struct ncclDevComm_v23000 {
   unsigned int magic;
@@ -76,6 +77,11 @@ static_assert(offsetof(struct ncclDevComm_v23000, hybridLsaBarrier) == 216);
 static_assert(offsetof(struct ncclDevComm_v23000, hybridRailGinBarrier) == 224);
 static_assert(offsetof(struct ncclDevComm_v23000, worldGinBarrier) == 232);
 static_assert(sizeof(struct ncclDevComm_v23000) == 240);
+
+static ncclResult_t ncclDevCommRequirementsFilter_v23000(ncclComm_t comm, ncclDevCommRequirements_t* reqs) {
+  reqs->ginType = comm->sharedRes->ginState.backends[0].ginType;
+  return ncclSuccess;
+}
 
 static ncclResult_t ncclDevCommCopyNewToOld_v23000(ncclComm_t comm, void* oldDevComm,
                                                    struct ncclDevComm const* newDevComm) {
@@ -156,10 +162,10 @@ static ncclResult_t ncclDevCommCopyOldToNew_v23000(ncclComm_t comm, struct ncclD
 }
 
 struct ncclDevCommCompat ncclDevCommCompat_v23000 = {
-  NCCL_VERSION(2, 30, 0), // minVersion
-  NCCL_VERSION(2, 30, 7), // maxVersion
-  nullptr,                        // commPropertiesFilter
-  nullptr,                        // devCommRequirementsFilter
-  ncclDevCommCopyNewToOld_v23000, // devCommCopyNewToOld
-  ncclDevCommCopyOldToNew_v23000, // devCommCopyOldToNew
+  NCCL_VERSION(2, 30, 0),               // minVersion
+  NCCL_VERSION(2, 30, 7),               // maxVersion
+  nullptr,                              // commPropertiesFilter
+  ncclDevCommRequirementsFilter_v23000, // devCommRequirementsFilter
+  ncclDevCommCopyNewToOld_v23000,       // devCommCopyNewToOld
+  ncclDevCommCopyOldToNew_v23000,       // devCommCopyOldToNew
 };
