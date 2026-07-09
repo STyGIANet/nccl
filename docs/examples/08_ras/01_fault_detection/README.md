@@ -382,9 +382,8 @@ injection.
 
 In exit/suspend mode the example calls `ncclCommAbort()` (not
 `ncclCommFinalize()`) on the surviving ranks.  `ncclCommFinalize()` is a
-collective that synchronizes all communicator ranks; it would block
-indefinitely waiting for the dead peer.  `ncclCommAbort()` tears down the
-communicator immediately and unconditionally.
+collective; it could block indefinitely waiting for the dead peer.
+`ncclCommAbort()` tears down the communicator immediately and unconditionally.
 
 In sleep mode every rank is alive at the end, so the example performs a
 normal collective teardown with `ncclCommDestroy()` and keeps MPI active for

@@ -717,7 +717,10 @@ class Communicator:
 
         Typically called before :py:meth:`destroy` to ensure all operations
         complete. This is a collective operation that must be called by all
-        ranks.
+        ranks. When one thread manages multiple host-local ranks (multiple GPUs
+        per thread), calls to :py:meth:`finalize` must be issued within
+        :py:func:`~nccl.core.group` so that all local ranks can enter
+        finalization together; otherwise they will hang.
 
         For nonblocking communicators this is itself nonblocking: success
         sets the communicator state to ``ncclInProgress`` to indicate
