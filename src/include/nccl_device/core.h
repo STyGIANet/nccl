@@ -209,7 +209,7 @@ struct ncclCommProperties {
   uint64_t commHash;
   int ginMinStride;
   ncclGinConnectionType_t ginConnectionType;
-  bool ginSupport[64];
+  bool ginSupport[64]; // ginSupport[i] is true if gin type i is supported
   size_t devCommRuntimeVersionSize;
 };
 
