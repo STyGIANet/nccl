@@ -57,6 +57,7 @@ NCCL_PARAM(GinGdakiQpDepth, "GIN_GDAKI_QP_DEPTH", 128);
 NCCL_PARAM(GinGdakiMaxDestRdAtomic, "GIN_GDAKI_MAX_DEST_RD_ATOMIC", -2);
 NCCL_PARAM(GinGdakiMaxQpRdAtomic, "GIN_GDAKI_MAX_QP_RD_ATOMIC", -2);
 NCCL_PARAM(GinErrorQuerySec, "GIN_ERROR_QUERY_SEC", 10);
+NCCL_PARAM(GinIbOooAll, "GIN_IB_OOO_OPT", 0);
 extern int64_t ncclParamIbTimeout();
 extern int64_t ncclParamIbRetryCnt();
 extern int64_t ncclParamIbPkey();
@@ -67,6 +68,12 @@ extern int64_t ncclParamDmaBufEnable();
 
 static const int NCCL_IB_SL_DEFAULT = 0;
 static const int NCCL_IB_TC_DEFAULT = 0;
+
+static enum doca_verbs_qp_ordering_semantic gdakiOrderingSematic() {
+  if (ncclParamGinIbOooAll() == 1) return DOCA_VERBS_QP_ORDERING_SEMANTIC_OOO_ALL;
+
+  return DOCA_VERBS_QP_ORDERING_SEMANTIC_IBTA;
+}
 
 static inline bool gdakiRelaxedOrderingEnabled() {
   static bool hasCheckedRelaxedOrdering = false;
@@ -315,6 +322,7 @@ struct gdaki_exch_info {
   int cuda_id;
   int rank;
   enum ibv_mtu active_mtu;
+  enum doca_verbs_qp_ordering_semantic ordering_semantic;
 };
 
 struct gdaki_context {
@@ -381,6 +389,7 @@ static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_co
   exch_info->cuda_id = gdaki_ctx->cuda_id;
   exch_info->rank = gdaki_ctx->rank;
   exch_info->active_mtu = gdaki_ctx->port_attr.active_mtu;
+  exch_info->ordering_semantic = gdakiOrderingSematic();
 }
 
 static ncclResult_t gdakiCreateVerbsAh(struct gdaki_context* ctx, int ib_sl, int ib_tc, int ib_gid_index) {
@@ -484,6 +493,17 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
   }
 
   NCCLCHECK(gdakiGetPathMtu(ctx->port_attr.active_mtu, exch_info->active_mtu, &path_mtu));
+  enum doca_verbs_qp_ordering_semantic ordering_semantic = gdakiOrderingSematic();
+
+  if (ordering_semantic != exch_info->ordering_semantic) {
+    uint32_t qpn;
+    DOCACHECK(doca_verbs_qp_get_qpn(gqp->qp, &qpn));
+    WARN("Can't connect local QP %x ordering_semantic %x with remote QP %x "
+         "ordering_semantic %x are ordering_semantic value is different",
+         qpn, ordering_semantic, exch_info->qpn, exch_info->ordering_semantic);
+    return ncclInvalidArgument;
+  }
+
   DOCACHECK(doca_verbs_ah_attr_set_gid(ctx->ah, exch_info->vgid));
   DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, dlid));
   DOCACHECK(doca_verbs_qp_attr_create(&verbs_qp_attr));
@@ -717,6 +737,8 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, 
   else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
 
   if (nqps_for_comm_this_rank > 0) {
+  // SPC-X Ordering Semantic. 0 by default.
+    qp_init_attr.ordering_semantic = gdakiOrderingSematic();
     if (needCompanion) {
     retry_create_qp_group_list_hl:
       doca_error_t docaStatus =
