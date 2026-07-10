@@ -211,8 +211,8 @@ static uint32_t calc_cq_external_umem_size(uint32_t queue_size, uint32_t dbr_siz
     return align_up_uint32(cqe_buf_size, priv_get_page_size());
 }
 
-static void mlx5_init_cqes(struct doca_gpunetio_ib_mlx5_cqe64 *cqes, size_t nb_cqes) {
-    for (size_t cqe_idx = 0; cqe_idx < nb_cqes; cqe_idx++)
+static void mlx5_init_cqes(struct doca_gpunetio_ib_mlx5_cqe64 *cqes, uint32_t nb_cqes) {
+    for (uint32_t cqe_idx = 0; cqe_idx < nb_cqes; cqe_idx++)
         cqes[cqe_idx].op_own =
             (DOCA_GPUNETIO_IB_MLX5_CQE_INVALID << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT) |
             DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK;
@@ -422,33 +422,6 @@ static doca_error_t create_cq(doca_gpu_t *gpu_dev, doca_dev_t *net_dev, struct i
             goto destroy_resources;
         }
 
-        cq_ring_haddr =
-            (struct doca_gpunetio_ib_mlx5_cqe64 *)(calloc(external_umem_size, sizeof(uint8_t)));
-        if (cq_ring_haddr == NULL) {
-            DOCA_LOG(LOG_ERR, "Failed to allocate cq host ring buffer memory for initialization");
-            status = DOCA_ERROR_NO_MEMORY;
-            goto destroy_resources;
-        }
-
-        mlx5_init_cqes(cq_ring_haddr, ncqes);
-
-        DOCA_LOG(LOG_DEBUG, "Create CQ memcpy cq_ring_haddr %p into umem_dev_ptr %p size %d\n",
-                 (void *)(cq_ring_haddr), (*umem_dev_ptr), external_umem_size);
-
-        if (enable_umem_cpu) {
-            memcpy((*umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size * sizeof(uint8_t));
-        } else {
-            status_cuda = DOCA_VERBS_CUDA_CALL_CLEAR_ERROR(cudaMemcpy(
-                (*umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault));
-            if (status_cuda != cudaSuccess) {
-                DOCA_LOG(LOG_ERR, "Failed to cudaMempy gpu cq cq ring buffer ret %d", status_cuda);
-                goto destroy_resources;
-            }
-        }
-
-        free(cq_ring_haddr);
-        cq_ring_haddr = nullptr;
-
         if (enable_umem_cpu) {
             status =
                 create_gpu_umem(gpu_dev, net_dev, DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_CUDA_PEERMEM,
@@ -464,6 +437,36 @@ static doca_error_t create_cq(doca_gpu_t *gpu_dev, doca_dev_t *net_dev, struct i
 
         cq_umem_to_use = *gpu_umem;
         cq_umem_offset = 0;
+    }
+
+    /* Initialize all CQEs with INVALID value. */
+    {
+        cq_ring_haddr = (struct doca_gpunetio_ib_mlx5_cqe64 *)calloc(external_umem_size, sizeof(uint8_t));
+        if (cq_ring_haddr == NULL) {
+            status = DOCA_ERROR_NO_MEMORY;
+            goto destroy_resources;
+        }
+
+        mlx5_init_cqes(cq_ring_haddr, ncqes);
+
+        if (enable_umem_cpu) {
+            memcpy(*umem_dev_ptr, (void *)(cq_ring_haddr), external_umem_size * sizeof(uint8_t));
+        } else {
+            status_cuda = DOCA_VERBS_CUDA_CALL_CLEAR_ERROR(cudaMemcpy(
+                (*umem_dev_ptr), (void *)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault));
+            if (status_cuda != cudaSuccess) {
+                DOCA_LOG(LOG_ERR, "Failed to cudaMempy gpu cq cq ring buffer ret %d", status_cuda);
+                goto destroy_resources;
+            }
+        }
+
+        free(cq_ring_haddr);
+        cq_ring_haddr = nullptr;
+
+        if (status_cuda != cudaSuccess) {
+            status = DOCA_ERROR_DRIVER;
+            goto destroy_resources;
+        }
     }
 
     status = doca_verbs_cq_attr_set_external_umem(verbs_cq_attr, cq_umem_to_use, cq_umem_offset);
@@ -547,6 +550,9 @@ destroy_resources:
             *umem_dev_ptr = 0;
         }
     }
+
+    if (cq_ring_haddr)
+        free(cq_ring_haddr);
 
     return status;
 }
@@ -1387,34 +1393,6 @@ doca_error_t doca_gpu_verbs_create_qp_list_hl(struct doca_gpu_verbs_qp_init_attr
         if (status != DOCA_SUCCESS) goto exit_error;
     }
 
-    /* Initialize all CQEs in the shared CQ slab up-front; create_cq shared path skips init. */
-    {
-        size_t total_cq_size = (size_t)cq_size_per_qp * num_qps;
-        struct doca_gpunetio_ib_mlx5_cqe64 *cq_ring_haddr =
-            (struct doca_gpunetio_ib_mlx5_cqe64 *)calloc(total_cq_size, sizeof(uint8_t));
-        if (cq_ring_haddr == NULL) {
-            status = DOCA_ERROR_NO_MEMORY;
-            goto exit_error;
-        }
-        for (uint32_t i = 0; i < num_qps; i++) {
-            auto *base = (struct doca_gpunetio_ib_mlx5_cqe64 *)((uintptr_t)cq_ring_haddr +
-                                                                (size_t)cq_size_per_qp * i);
-            mlx5_init_cqes(base, sq_nwqe);
-        }
-        cudaError_t cerr = cudaSuccess;
-        if (cq_umem->base_cpu_ptr != NULL) {
-            memcpy(cq_umem->base_cpu_ptr, cq_ring_haddr, total_cq_size);
-        } else {
-            cerr = DOCA_VERBS_CUDA_CALL_CLEAR_ERROR(
-                cudaMemcpy(cq_umem->base_gpu_ptr, cq_ring_haddr, total_cq_size, cudaMemcpyDefault));
-        }
-        free(cq_ring_haddr);
-        if (cerr != cudaSuccess) {
-            status = DOCA_ERROR_DRIVER;
-            goto exit_error;
-        }
-    }
-
     for (uint32_t i = 0; i < num_qps; i++) {
         struct doca_gpu_verbs_qp_hl *qp_ = &list->qps[i];
         qp_->gpu_dev = qp_init_attr->gpu_dev;
@@ -1610,34 +1588,6 @@ doca_error_t doca_gpu_verbs_create_qp_group_list_hl(
                                 qp_init_attr->mreg_type, (size_t)dbr_size_per_qp * total_qps,
                                 dbr_is_host_mem, qp_init_attr->enable_umem_cpu, &sq_dbr_umem);
         if (status != DOCA_SUCCESS) goto exit_error;
-    }
-
-    /* Initialize all CQEs in the shared CQ slab up-front. */
-    {
-        size_t total_cq_size = (size_t)cq_size_per_qp * total_qps;
-        struct doca_gpunetio_ib_mlx5_cqe64 *cq_ring_haddr =
-            (struct doca_gpunetio_ib_mlx5_cqe64 *)calloc(total_cq_size, sizeof(uint8_t));
-        if (cq_ring_haddr == NULL) {
-            status = DOCA_ERROR_NO_MEMORY;
-            goto exit_error;
-        }
-        for (uint32_t i = 0; i < total_qps; i++) {
-            auto *base = (struct doca_gpunetio_ib_mlx5_cqe64 *)((uintptr_t)cq_ring_haddr +
-                                                                (size_t)cq_size_per_qp * i);
-            mlx5_init_cqes(base, sq_nwqe);
-        }
-        cudaError_t cerr = cudaSuccess;
-        if (cq_umem->base_cpu_ptr != NULL) {
-            memcpy(cq_umem->base_cpu_ptr, cq_ring_haddr, total_cq_size);
-        } else {
-            cerr = DOCA_VERBS_CUDA_CALL_CLEAR_ERROR(
-                cudaMemcpy(cq_umem->base_gpu_ptr, cq_ring_haddr, total_cq_size, cudaMemcpyDefault));
-        }
-        free(cq_ring_haddr);
-        if (cerr != cudaSuccess) {
-            status = DOCA_ERROR_DRIVER;
-            goto exit_error;
-        }
     }
 
     for (uint32_t i = 0; i < num_qp_groups; i++) {
