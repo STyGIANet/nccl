@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 enum ncclDiagP2pHandlePath {
   ncclDiagP2pHandleDirect = 1,
@@ -45,6 +46,7 @@ enum ncclDiagP2pReason {
 };
 
 static constexpr int kDiagP2pBarrierWrote = 0xd1a601;
+static constexpr int kDiagP2pBarrierReported = 0xd1a603;
 static constexpr int kDiagP2pBarrierImportsFreed = 0xd1a604;
 
 struct ncclDiagP2pEdgeInfo {
@@ -75,6 +77,12 @@ struct ncclDiagP2pWriteObs {
   uint64_t verifyValue;
 };
 
+struct ncclDiagP2pSummary {
+  uint64_t tested;
+  uint64_t passed;
+  uint64_t skipped;
+};
+
 struct ncclDiagP2pMapping {
   void* ptr;
   int active;
@@ -85,6 +93,40 @@ struct ncclDiagP2pMapping {
   int peerAccessEnabled;
   int peerAccessDev;
 };
+
+static ncclResult_t ncclDiagP2pBuildRankSet(struct ncclComm* comm, int** ranks, int* rank, int* nRanks) {
+  // The topology is fused over the local ranks normally and over the MNNVL clique when MNNVL is active. Cross-clique
+  // P2P expands that set to every rank in the same NVLink fabric domain.
+  if (!comm->p2pCrossClique) {
+    *ranks = comm->MNNVL ? comm->clique.ranks : comm->localRankToRank;
+    *rank = comm->MNNVL ? comm->cliqueRank : comm->localRank;
+    *nRanks = comm->MNNVL ? comm->clique.size : comm->localRanks;
+    return ncclSuccess;
+  }
+
+  if (comm->nvlDomainSize <= 0) return ncclInternalError;
+  NCCLCHECK(ncclCalloc(ranks, comm->nvlDomainSize));
+  *rank = -1;
+  *nRanks = comm->nvlDomainSize;
+  int slot = 0;
+  for (int peer = 0; peer < comm->nRanks; peer++) {
+    if (memcmp(comm->peerInfo[comm->rank].fabricInfo.clusterUuid, comm->peerInfo[peer].fabricInfo.clusterUuid,
+               sizeof(comm->peerInfo[comm->rank].fabricInfo.clusterUuid)) != 0)
+      continue;
+    if (slot == *nRanks) return ncclInternalError;
+    (*ranks)[slot] = peer;
+    if (peer == comm->rank) *rank = slot;
+    slot++;
+  }
+  return *rank >= 0 && slot == *nRanks ? ncclSuccess : ncclInternalError;
+}
+
+static int ncclDiagP2pRankToSlot(const int* ranks, int nRanks, int rank) {
+  for (int slot = 0; slot < nRanks; slot++) {
+    if (ranks[slot] == rank) return slot;
+  }
+  return -1;
+}
 
 static bool ncclDiagP2pSameProcess(struct ncclComm* comm, int srcRank, int dstRank) {
   const struct ncclPeerInfo* a = comm->peerInfo + srcRank;
@@ -162,10 +204,9 @@ static void ncclDiagP2pSetReason(struct ncclDiagP2pEdgeResult* result, int reaso
   if (result->reason == ncclDiagP2pReasonNone) result->reason = reason;
 }
 
-static void ncclDiagP2pSetLocalReason(struct ncclComm* comm, struct ncclDiagP2pEdgeResult* allResults, int reason) {
-  const int nRanks = comm->nRanks;
+static void ncclDiagP2pSetLocalReason(int rank, int nRanks, struct ncclDiagP2pEdgeResult* allResults, int reason) {
   for (int dst = 0; dst < nRanks; dst++) {
-    struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+    struct ncclDiagP2pEdgeResult* result = allResults + rank * nRanks + dst;
     if (!result->tested) continue;
     ncclDiagP2pSetReason(result, reason);
   }
@@ -239,22 +280,30 @@ static void ncclDiagP2pReport(struct ncclComm* comm, int srcRank, int dstRank, c
              ncclDiagP2pReasonName(result->reason));
 }
 
-static void ncclDiagP2pReportSummary(struct ncclComm* comm, const struct ncclDiagP2pEdgeInfo* edgeMatrix,
-                                     struct ncclDiagP2pEdgeResult* allResults) {
-  if (comm->rank != 0) return;
-
-  const int nRanks = comm->nRanks;
-  int tested = 0;
-  int passed = 0;
-  int skipped = 0;
+static void ncclDiagP2pBuildGroupSummary(int nRanks, const struct ncclDiagP2pEdgeResult* allResults,
+                                         struct ncclDiagP2pSummary* summary) {
+  *summary = {};
   for (int src = 0; src < nRanks; src++) {
     for (int dst = 0; dst < nRanks; dst++) {
-      struct ncclDiagP2pEdgeResult* result = allResults + src * nRanks + dst;
-      if (result->reason == ncclDiagP2pReasonIndirect) skipped++;
+      const struct ncclDiagP2pEdgeResult* result = allResults + src * nRanks + dst;
+      if (result->reason == ncclDiagP2pReasonIndirect) summary->skipped++;
       if (!result->tested) continue;
-      tested++;
-      if (result->reason == ncclDiagP2pReasonNone) passed++;
+      summary->tested++;
+      if (result->reason == ncclDiagP2pReasonNone) summary->passed++;
     }
+  }
+}
+
+static void ncclDiagP2pReportSummary(struct ncclComm* comm, const struct ncclDiagP2pSummary* summaries) {
+  if (comm->rank != 0) return;
+
+  uint64_t tested = 0;
+  uint64_t passed = 0;
+  uint64_t skipped = 0;
+  for (int rank = 0; rank < comm->nRanks; rank++) {
+    tested += summaries[rank].tested;
+    passed += summaries[rank].passed;
+    skipped += summaries[rank].skipped;
   }
 
   if (tested == 0) return;
@@ -262,29 +311,36 @@ static void ncclDiagP2pReportSummary(struct ncclComm* comm, const struct ncclDia
   // This check covers topology-eligible directed GPU P2P pairs. A given collective and algorithm may use only a subset
   // of those pairs, and may use multiple channels for the same pair.
   const char* level = passed == tested ? "[OK]   " : "[INFO] ";
-  char counts[32];
-  if (passed == tested) snprintf(counts, sizeof(counts), "all %d", passed);
-  else snprintf(counts, sizeof(counts), "%d/%d", passed, tested);
+  char counts[64];
+  if (passed == tested) snprintf(counts, sizeof(counts), "all %llu", (unsigned long long)passed);
+  else snprintf(counts, sizeof(counts), "%llu/%llu", (unsigned long long)passed, (unsigned long long)tested);
   if (skipped == 0) DIAG_PRINT("NCCL DIAG %sp2p: %s directed GPU P2P edges verified", level, counts);
-  else DIAG_PRINT("NCCL DIAG %sp2p: %s directed GPU P2P edges verified (skipped indirect=%d)", level, counts, skipped);
+  else
+    DIAG_PRINT("NCCL DIAG %sp2p: %s directed GPU P2P edges verified (skipped indirect=%llu)", level, counts,
+               (unsigned long long)skipped);
+}
 
+static void ncclDiagP2pReportGroupFailures(struct ncclComm* comm, const int* ranks, int nRanks,
+                                           const struct ncclDiagP2pEdgeInfo* edgeMatrix,
+                                           struct ncclDiagP2pEdgeResult* allResults) {
   for (int src = 0; src < nRanks; src++) {
     for (int dst = 0; dst < nRanks; dst++) {
       struct ncclDiagP2pEdgeResult* result = allResults + src * nRanks + dst;
       if (!result->tested || result->reason == ncclDiagP2pReasonNone) continue;
       const struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + src * nRanks + dst;
-      ncclDiagP2pReport(comm, src, dst, edge, result);
+      ncclDiagP2pReport(comm, ranks[src], ranks[dst], edge, result);
     }
   }
 }
 
-static void ncclDiagP2pDiscoverLocalEdges(struct ncclComm* comm, struct ncclDiagP2pEdgeInfo* edgeMatrix,
+static void ncclDiagP2pDiscoverLocalEdges(struct ncclComm* comm, const int* ranks, int rank, int nRanks,
+                                          struct ncclDiagP2pEdgeInfo* edgeMatrix,
                                           struct ncclDiagP2pEdgeResult* allResults, int* outPeers, int* outPeerCount) {
-  const int nRanks = comm->nRanks;
   *outPeerCount = 0;
-  for (int dst = 0; dst < nRanks; dst++) {
-    struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + comm->rank * nRanks + dst;
-    struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+  for (int dstSlot = 0; dstSlot < nRanks; dstSlot++) {
+    int dst = ranks[dstSlot];
+    struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + rank * nRanks + dstSlot;
+    struct ncclDiagP2pEdgeResult* result = allResults + rank * nRanks + dstSlot;
     edge->p2p = 0;
     edge->read = 0;
     edge->pathType = (dst == comm->rank) ? PATH_LOC : ncclDiagP2pPathType(comm, comm->rank, dst);
@@ -308,23 +364,24 @@ static void ncclDiagP2pDiscoverLocalEdges(struct ncclComm* comm, struct ncclDiag
       result->reason = ncclDiagP2pReasonIndirect;
       ncclDiagP2pLogEdge(comm, "skip", comm->rank, dst, edge, "reason=indirect");
     } else if (edge->p2p) {
-      outPeers[(*outPeerCount)++] = dst;
+      outPeers[(*outPeerCount)++] = dstSlot;
       result->tested = 1;
     }
   }
 }
 
-static void ncclDiagP2pBuildInboundPeers(struct ncclComm* comm, const struct ncclDiagP2pEdgeInfo* edgeMatrix,
-                                         int* inPeers, int* inPeerCount, bool* needsLocalHandle) {
-  const int nRanks = comm->nRanks;
+static void ncclDiagP2pBuildInboundPeers(struct ncclComm* comm, const int* ranks, int rank, int nRanks,
+                                         const struct ncclDiagP2pEdgeInfo* edgeMatrix, int* inPeers, int* inPeerCount,
+                                         bool* needsLocalHandle) {
   *inPeerCount = 0;
   *needsLocalHandle = false;
   for (int src = 0; src < nRanks; src++) {
-    const struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + src * nRanks + comm->rank;
+    const struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + src * nRanks + rank;
     if (!edge->p2p) continue;
 
     inPeers[(*inPeerCount)++] = src;
-    if (ncclCuMemEnable() && edge->sameProcess && comm->peerInfo[src].cudaDev != comm->peerInfo[comm->rank].cudaDev) {
+    if (ncclCuMemEnable() && edge->sameProcess &&
+        comm->peerInfo[ranks[src]].cudaDev != comm->peerInfo[comm->rank].cudaDev) {
       *needsLocalHandle = true;
     }
   }
@@ -416,21 +473,21 @@ static ncclResult_t ncclDiagP2pFreeMapping(struct ncclComm* comm, struct ncclDia
   return ret;
 }
 
-static void ncclDiagP2pImportMappings(struct ncclComm* comm, int outPeerCount, const int* outPeers,
-                                      const struct ncclDiagP2pEdgeInfo* edgeMatrix, struct ncclDiagP2pMemDesc* memDescs,
-                                      struct ncclDiagP2pMapping* mappings, struct ncclDiagP2pEdgeResult* allResults,
-                                      bool cudaUsable, cudaStream_t stream) {
-  const int nRanks = comm->nRanks;
+static void ncclDiagP2pImportMappings(struct ncclComm* comm, const int* ranks, int rank, int nRanks, int outPeerCount,
+                                      const int* outPeers, const struct ncclDiagP2pEdgeInfo* edgeMatrix,
+                                      struct ncclDiagP2pMemDesc* memDescs, struct ncclDiagP2pMapping* mappings,
+                                      struct ncclDiagP2pEdgeResult* allResults, bool cudaUsable, cudaStream_t stream) {
   for (int i = 0; i < outPeerCount; i++) {
-    int dst = outPeers[i];
-    const struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + comm->rank * nRanks + dst;
-    struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+    int dstSlot = outPeers[i];
+    int dst = ranks[dstSlot];
+    const struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + rank * nRanks + dstSlot;
+    struct ncclDiagP2pEdgeResult* result = allResults + rank * nRanks + dstSlot;
     if (!cudaUsable || stream == nullptr) {
       ncclDiagP2pSetReason(result, ncclDiagP2pReasonImport);
       ncclDiagP2pLogEdge(comm, "import", comm->rank, dst, edge, "import=0 reason=localCuda");
       continue;
     }
-    if (!memDescs[dst].valid) {
+    if (!memDescs[dstSlot].valid) {
       ncclDiagP2pSetReason(result, ncclDiagP2pReasonNoDescriptor);
       ncclDiagP2pLogEdge(comm, "import", comm->rank, dst, edge, "import=0 reason=noDescriptor");
       continue;
@@ -438,22 +495,23 @@ static void ncclDiagP2pImportMappings(struct ncclComm* comm, int outPeerCount, c
 
     ncclResult_t importRet = ncclSuccess;
     if (edge->sameProcess) {
-      importRet = ncclDiagP2pMapSameProcess(comm, dst, memDescs + dst, mappings + dst);
+      importRet = ncclDiagP2pMapSameProcess(comm, dst, memDescs + dstSlot, mappings + dstSlot);
     } else {
-      importRet = ncclP2pImportShareableBuffer(comm, dst, memDescs[dst].bytes, &memDescs[dst].ipcDesc,
-                                               &mappings[dst].ptr, (void*)memDescs[dst].directPtr, ncclMemScratch);
-      if (mappings[dst].ptr != nullptr) {
-        mappings[dst].active = 1;
+      importRet =
+        ncclP2pImportShareableBuffer(comm, dst, memDescs[dstSlot].bytes, &memDescs[dstSlot].ipcDesc,
+                                     &mappings[dstSlot].ptr, (void*)memDescs[dstSlot].directPtr, ncclMemScratch);
+      if (mappings[dstSlot].ptr != nullptr) {
+        mappings[dstSlot].active = 1;
         if (ncclCuMemEnable()) {
-          mappings[dst].crossProcessCuMem = 1;
-          mappings[dst].tracked = importRet == ncclSuccess ? 1 : 0;
+          mappings[dstSlot].crossProcessCuMem = 1;
+          mappings[dstSlot].tracked = importRet == ncclSuccess ? 1 : 0;
         } else {
-          mappings[dst].legacyIpc = 1;
+          mappings[dstSlot].legacyIpc = 1;
         }
       }
     }
 
-    if (importRet == ncclSuccess && mappings[dst].ptr != nullptr) {
+    if (importRet == ncclSuccess && mappings[dstSlot].ptr != nullptr) {
       ncclDiagP2pLogEdge(comm, "import", comm->rank, dst, edge, "import=1");
     } else {
       ncclDiagP2pSetReason(result, ncclDiagP2pReasonImport);
@@ -462,16 +520,17 @@ static void ncclDiagP2pImportMappings(struct ncclComm* comm, int outPeerCount, c
   }
 }
 
-static bool ncclDiagP2pPrepareRemoteOps(
-  struct ncclComm* comm, int outPeerCount, const int* outPeers, const struct ncclDiagP2pEdgeResult* allResults,
-  const struct ncclDiagP2pMapping* mappings, struct ncclDiagP2pRemoteOp** remoteOpsHost,
-  struct ncclDiagP2pRemoteOp** remoteOpsDev, int* remoteOpCount, cudaStream_t stream) {
-  const int nRanks = comm->nRanks;
+static bool ncclDiagP2pPrepareRemoteOps(struct ncclComm* comm, const int* ranks, int rank, int nRanks, int outPeerCount,
+                                        const int* outPeers, const struct ncclDiagP2pEdgeResult* allResults,
+                                        const struct ncclDiagP2pMapping* mappings,
+                                        struct ncclDiagP2pRemoteOp** remoteOpsHost,
+                                        struct ncclDiagP2pRemoteOp** remoteOpsDev, int* remoteOpCount,
+                                        cudaStream_t stream) {
   int importedCount = 0;
   *remoteOpCount = 0;
   for (int i = 0; i < outPeerCount; i++) {
-    int dst = outPeers[i];
-    const struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+    int dstSlot = outPeers[i];
+    const struct ncclDiagP2pEdgeResult* result = allResults + rank * nRanks + dstSlot;
     if (result->reason == ncclDiagP2pReasonNone) importedCount++;
   }
   if (importedCount == 0) return true;
@@ -483,14 +542,16 @@ static bool ncclDiagP2pPrepareRemoteOps(
   if (!ncclDiagP2pNcclSuccess(devAllocRet, "allocate remote op descriptors on device")) return false;
 
   for (int i = 0; i < outPeerCount; i++) {
-    int dst = outPeers[i];
-    const struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+    int dstSlot = outPeers[i];
+    int dst = ranks[dstSlot];
+    const struct ncclDiagP2pEdgeResult* result = allResults + rank * nRanks + dstSlot;
     if (result->reason != ncclDiagP2pReasonNone) continue;
 
     struct ncclDiagP2pRemoteOp* op = *remoteOpsHost + (*remoteOpCount)++;
-    op->remoteSlots = (struct ncclDiagP2pSlot*)mappings[dst].ptr;
+    op->remoteSlots = (struct ncclDiagP2pSlot*)mappings[dstSlot].ptr;
     op->srcRank = comm->rank;
     op->dstRank = dst;
+    op->srcSlot = rank;
   }
 
   cudaError_t cudaErr = cudaMemcpyAsync(
@@ -500,9 +561,12 @@ static bool ncclDiagP2pPrepareRemoteOps(
 
 ncclResult_t ncclDiagP2pRun(struct ncclComm* comm) {
   ncclResult_t ret = ncclSuccess;
-  const int nRanks = comm->nRanks;
+  int* p2pRanks = nullptr;
+  int p2pRank = -1;
+  int p2pNRanks = 0;
   struct ncclDiagP2pEdgeInfo* edgeMatrix = nullptr;
   ncclResult_t* setupResults = nullptr;
+  struct ncclDiagP2pSummary* summaries = nullptr;
   struct ncclDiagP2pMemDesc* memDescs = nullptr;
   struct ncclDiagP2pMapping* mappings = nullptr;
   struct ncclDiagP2pEdgeResult* allResults = nullptr;
@@ -512,6 +576,7 @@ ncclResult_t ncclDiagP2pRun(struct ncclComm* comm) {
   struct ncclDiagP2pRemoteOp* remoteOpsDev = nullptr;
   struct ncclDiagP2pSlot* localSlots = nullptr;
   struct ncclDiagP2pSlot* hostSlots = nullptr;
+  int* p2pRanksDev = nullptr;
   uint64_t* readbackDev = nullptr;
   uint64_t* readbackHost = nullptr;
   struct ncclDiagP2pWriteObs* writeObsMatrix = nullptr;
@@ -547,20 +612,22 @@ ncclResult_t ncclDiagP2pRun(struct ncclComm* comm) {
     cudaUsable = ncclDiagP2pCudaSuccess(cudaErr, "createStream");
   }
 
-  NCCLCHECKGOTO(ncclCalloc(&setupResults, nRanks), ret, fail);
-  NCCLCHECKGOTO(ncclCalloc(&edgeMatrix, (size_t)nRanks * nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&memDescs, nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&mappings, nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&allResults, (size_t)nRanks * nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&writeObsMatrix, (size_t)nRanks * nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&outPeers, nRanks), setupRet, setup_complete);
-  NCCLCHECKGOTO(ncclCalloc(&inPeers, nRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&setupResults, comm->nRanks), ret, fail);
+  NCCLCHECKGOTO(ncclDiagP2pBuildRankSet(comm, &p2pRanks, &p2pRank, &p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&summaries, comm->nRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&edgeMatrix, (size_t)p2pNRanks * p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&memDescs, p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&mappings, p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&allResults, (size_t)p2pNRanks * p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&writeObsMatrix, (size_t)p2pNRanks * p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&outPeers, p2pNRanks), setupRet, setup_complete);
+  NCCLCHECKGOTO(ncclCalloc(&inPeers, p2pNRanks), setupRet, setup_complete);
 
 setup_complete:
   setupResults[comm->rank] = setupRet;
   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, setupResults, sizeof(ncclResult_t)), ret, fail);
 
-  for (int rank = 0; rank < nRanks; rank++) {
+  for (int rank = 0; rank < comm->nRanks; rank++) {
     if (setupResults[rank] == ncclSuccess) continue;
     setupRet = setupResults[rank];
     if (comm->rank == 0) {
@@ -569,38 +636,53 @@ setup_complete:
   }
   NCCLCHECKGOTO(setupRet, ret, fail);
 
-  ncclDiagP2pDiscoverLocalEdges(comm, edgeMatrix, allResults, outPeers, &outPeerCount);
+  ncclDiagP2pDiscoverLocalEdges(comm, p2pRanks, p2pRank, p2pNRanks, edgeMatrix, allResults, outPeers, &outPeerCount);
 
-  NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, edgeMatrix, nRanks * sizeof(struct ncclDiagP2pEdgeInfo)), ret,
-                fail);
+  NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks, edgeMatrix,
+                                            p2pNRanks * sizeof(struct ncclDiagP2pEdgeInfo)),
+                ret, fail);
 
-  ncclDiagP2pBuildInboundPeers(comm, edgeMatrix, inPeers, &inPeerCount, &needsLocalHandle);
+  ncclDiagP2pBuildInboundPeers(comm, p2pRanks, p2pRank, p2pNRanks, edgeMatrix, inPeers, &inPeerCount,
+                               &needsLocalHandle);
 
-  localBytes = (size_t)nRanks * sizeof(struct ncclDiagP2pSlot);
-  memDescs[comm->rank].bytes = inPeerCount == 0 ? 0 : localBytes;
+  localBytes = (size_t)p2pNRanks * sizeof(struct ncclDiagP2pSlot);
+  memDescs[p2pRank].bytes = inPeerCount == 0 ? 0 : localBytes;
   if (inPeerCount > 0 && cudaUsable && stream != nullptr) {
     // A single owner-held reference is shared by all same-process mappings.
     ncclResult_t allocRet =
-      ncclP2pAllocateShareableBuffer(localBytes, needsLocalHandle ? 1 : 0, &memDescs[comm->rank].ipcDesc,
+      ncclP2pAllocateShareableBuffer(localBytes, needsLocalHandle ? 1 : 0, &memDescs[p2pRank].ipcDesc,
                                      (void**)&localSlots, -1, comm->memManager, ncclMemScratch);
     if (ncclDiagP2pNcclSuccess(allocRet, "allocate local slots")) {
       localHandleRetained = needsLocalHandle;
-      ncclResult_t initRet = ncclDiagP2pInitSlots(localSlots, nRanks, comm->rank, stream);
-      cudaErr = initRet == ncclSuccess ? cudaStreamSynchronize(stream) : cudaSuccess;
-      if (initRet == ncclSuccess && ncclDiagP2pCudaSuccess(cudaErr, "initialize local slots")) {
-        memDescs[comm->rank].valid = 1;
-        memDescs[comm->rank].directPtr = (uintptr_t)localSlots;
+      ncclResult_t ranksAllocRet = ncclCudaCalloc(&p2pRanksDev, p2pNRanks, comm->memManager, ncclMemScratch);
+      if (ncclDiagP2pNcclSuccess(ranksAllocRet, "allocate P2P rank map")) {
+        cudaErr = cudaMemcpyAsync(p2pRanksDev, p2pRanks, p2pNRanks * sizeof(int), cudaMemcpyHostToDevice, stream);
+        ncclResult_t initRet = ncclSuccess;
+        if (ncclDiagP2pCudaSuccess(cudaErr, "copy P2P rank map")) {
+          initRet = ncclDiagP2pInitSlots(localSlots, p2pRanksDev, p2pNRanks, comm->rank, stream);
+          cudaErr = initRet == ncclSuccess ? cudaStreamSynchronize(stream) : cudaSuccess;
+        } else {
+          initRet = ncclUnhandledCudaError;
+        }
+        if (initRet == ncclSuccess && ncclDiagP2pCudaSuccess(cudaErr, "initialize local slots")) {
+          memDescs[p2pRank].valid = 1;
+          memDescs[p2pRank].directPtr = (uintptr_t)localSlots;
+        } else {
+          (void)ncclDiagP2pNcclSuccess(initRet, "initialize local slots");
+          cudaUsable = false;
+        }
       } else {
-        (void)ncclDiagP2pNcclSuccess(initRet, "initialize local slots");
         cudaUsable = false;
       }
     }
   }
 
-  NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, memDescs, sizeof(struct ncclDiagP2pMemDesc)), ret, fail);
+  NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks, memDescs,
+                                            sizeof(struct ncclDiagP2pMemDesc)),
+                ret, fail);
 
-  ncclDiagP2pImportMappings(comm, outPeerCount, outPeers, edgeMatrix, memDescs, mappings, allResults, cudaUsable,
-                            stream);
+  ncclDiagP2pImportMappings(comm, p2pRanks, p2pRank, p2pNRanks, outPeerCount, outPeers, edgeMatrix, memDescs, mappings,
+                            allResults, cudaUsable, stream);
 
   for (int i = 0; i < outPeerCount; i++) {
     if (!mappings[outPeers[i]].peerAccessEnabled) continue;
@@ -614,15 +696,16 @@ setup_complete:
   }
 
   if (outPeerCount > 0 && cudaUsable && stream != nullptr) {
-    cudaUsable = ncclDiagP2pPrepareRemoteOps(comm, outPeerCount, outPeers, allResults, mappings, &remoteOpsHost,
-                                             &remoteOpsDev, &remoteOpCount, stream);
+    cudaUsable = ncclDiagP2pPrepareRemoteOps(comm, p2pRanks, p2pRank, p2pNRanks, outPeerCount, outPeers, allResults,
+                                             mappings, &remoteOpsHost, &remoteOpsDev, &remoteOpCount, stream);
   }
 
   writePhaseOk = cudaUsable && stream != nullptr;
   if (writePhaseOk && remoteOpCount > 0) {
     for (int i = 0; i < remoteOpCount; i++) {
       struct ncclDiagP2pRemoteOp* op = remoteOpsHost + i;
-      struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + op->srcRank * nRanks + op->dstRank;
+      int dstSlot = ncclDiagP2pRankToSlot(p2pRanks, p2pNRanks, op->dstRank);
+      struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + p2pRank * p2pNRanks + dstSlot;
       ncclDiagP2pLogEdge(comm, "write", op->srcRank, op->dstRank, edge, nullptr);
     }
     ncclResult_t launchRet = ncclDiagP2pRemoteWrite(remoteOpsDev, remoteOpCount, stream);
@@ -636,15 +719,16 @@ setup_complete:
     }
   }
   if (!writePhaseOk) {
-    ncclDiagP2pSetLocalReason(comm, allResults, ncclDiagP2pReasonWriteLaunch);
+    ncclDiagP2pSetLocalReason(p2pRank, p2pNRanks, allResults, ncclDiagP2pReasonWriteLaunch);
   }
-  NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, nRanks, kDiagP2pBarrierWrote), ret, fail);
+  NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks, kDiagP2pBarrierWrote), ret,
+                fail);
 
-  if (inPeerCount > 0 && memDescs[comm->rank].valid && cudaUsable && stream != nullptr) {
+  if (inPeerCount > 0 && memDescs[p2pRank].valid && cudaUsable && stream != nullptr) {
     bool localVerifyOk = false;
-    ncclResult_t hostAllocRet = ncclCalloc(&hostSlots, nRanks);
+    ncclResult_t hostAllocRet = ncclCalloc(&hostSlots, p2pNRanks);
     if (ncclDiagP2pNcclSuccess(hostAllocRet, "allocate write observations")) {
-      ncclResult_t verifyRet = ncclDiagP2pVerifyWrites(localSlots, nRanks, stream);
+      ncclResult_t verifyRet = ncclDiagP2pVerifyWrites(localSlots, p2pNRanks, stream);
       if (verifyRet == ncclSuccess) {
         cudaErr = cudaMemcpyAsync(hostSlots, localSlots, localBytes, cudaMemcpyDeviceToHost, stream);
         if (ncclDiagP2pCudaSuccess(cudaErr, "copy write observations")) {
@@ -658,22 +742,24 @@ setup_complete:
 
     if (localVerifyOk) {
       for (int i = 0; i < inPeerCount; i++) {
-        int src = inPeers[i];
-        struct ncclDiagP2pWriteObs* obs = writeObsMatrix + comm->rank * nRanks + src;
-        obs->writeValue = hostSlots[src].writeValue;
-        obs->verifyValue = hostSlots[src].verifyValue;
+        int srcSlot = inPeers[i];
+        struct ncclDiagP2pWriteObs* obs = writeObsMatrix + p2pRank * p2pNRanks + srcSlot;
+        obs->writeValue = hostSlots[srcSlot].writeValue;
+        obs->verifyValue = hostSlots[srcSlot].verifyValue;
       }
     } else {
       cudaUsable = false;
     }
   }
 
-  NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, writeObsMatrix, nRanks * sizeof(struct ncclDiagP2pWriteObs)), ret,
-                fail);
+  NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks, writeObsMatrix,
+                                            p2pNRanks * sizeof(struct ncclDiagP2pWriteObs)),
+                ret, fail);
   for (int i = 0; i < outPeerCount; i++) {
-    int dst = outPeers[i];
-    struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
-    struct ncclDiagP2pWriteObs* obs = writeObsMatrix + dst * nRanks + comm->rank;
+    int dstSlot = outPeers[i];
+    int dst = p2pRanks[dstSlot];
+    struct ncclDiagP2pEdgeResult* result = allResults + p2pRank * p2pNRanks + dstSlot;
+    struct ncclDiagP2pWriteObs* obs = writeObsMatrix + dstSlot * p2pNRanks + p2pRank;
     uint64_t expected = ncclDiagP2pWritePattern(comm->rank, dst);
     result->writeGot = obs->writeValue;
     result->verifyGot = obs->verifyValue;
@@ -700,7 +786,8 @@ setup_complete:
   if (readPhaseOk && remoteOpCount > 0) {
     for (int i = 0; i < remoteOpCount; i++) {
       struct ncclDiagP2pRemoteOp* op = remoteOpsHost + i;
-      struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + op->srcRank * nRanks + op->dstRank;
+      int dstSlot = ncclDiagP2pRankToSlot(p2pRanks, p2pNRanks, op->dstRank);
+      struct ncclDiagP2pEdgeInfo* edge = edgeMatrix + p2pRank * p2pNRanks + dstSlot;
       ncclDiagP2pLogEdge(comm, "read", op->srcRank, op->dstRank, edge, nullptr);
     }
     ncclResult_t launchRet = ncclDiagP2pRemoteRead(remoteOpsDev, remoteOpCount, readbackDev, stream);
@@ -717,22 +804,28 @@ setup_complete:
     }
   }
   if (!readPhaseOk) {
-    ncclDiagP2pSetLocalReason(comm, allResults, ncclDiagP2pReasonReadLaunch);
+    ncclDiagP2pSetLocalReason(p2pRank, p2pNRanks, allResults, ncclDiagP2pReasonReadLaunch);
   }
 
   for (int i = 0; i < remoteOpCount; i++) {
     int dst = remoteOpsHost[i].dstRank;
-    struct ncclDiagP2pEdgeResult* result = allResults + comm->rank * nRanks + dst;
+    int dstSlot = ncclDiagP2pRankToSlot(p2pRanks, p2pNRanks, dst);
+    struct ncclDiagP2pEdgeResult* result = allResults + p2pRank * p2pNRanks + dstSlot;
     if (!readPhaseOk) continue;
     uint64_t expected = ncclDiagP2pReadPattern(dst, comm->rank);
     result->readGot = readbackHost[i];
     if (readbackHost[i] != expected) ncclDiagP2pSetReason(result, ncclDiagP2pReasonReadMismatch);
   }
 
-  NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, allResults, nRanks * sizeof(struct ncclDiagP2pEdgeResult)), ret,
-                fail);
+  NCCLCHECKGOTO(bootstrapIntraNodeAllGather(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks, allResults,
+                                            p2pNRanks * sizeof(struct ncclDiagP2pEdgeResult)),
+                ret, fail);
 
-  ncclDiagP2pReportSummary(comm, edgeMatrix, allResults);
+  if (p2pRank == 0) ncclDiagP2pBuildGroupSummary(p2pNRanks, allResults, summaries + comm->rank);
+  NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, summaries, sizeof(struct ncclDiagP2pSummary)), ret, fail);
+  ncclDiagP2pReportSummary(comm, summaries);
+  NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, kDiagP2pBarrierReported), ret, fail);
+  if (p2pRank == 0) ncclDiagP2pReportGroupFailures(comm, p2pRanks, p2pNRanks, edgeMatrix, allResults);
 
 fail:
   runRet = ret;
@@ -744,15 +837,17 @@ fail:
     }
   }
 
-  for (int dst = 0; mappings != nullptr && dst < nRanks; dst++) {
+  for (int dst = 0; mappings != nullptr && dst < p2pNRanks; dst++) {
     NCCLCHECKIGNORE(ncclDiagP2pFreeMapping(comm, mappings + dst), cleanupRet);
   }
 
-  if (runRet == ncclSuccess) {
-    NCCLCHECKIGNORE(bootstrapBarrier(comm->bootstrap, comm->rank, nRanks, kDiagP2pBarrierImportsFreed), cleanupRet);
+  if (runRet == ncclSuccess && p2pRanks != nullptr) {
+    NCCLCHECKIGNORE(bootstrapIntraNodeBarrier(comm->bootstrap, p2pRanks, p2pRank, p2pNRanks,
+                                              kDiagP2pBarrierImportsFreed),
+                    cleanupRet);
   }
   if (localHandleRetained) {
-    NCCLCHECKIGNORE(ncclDiagP2pReleaseLocalHandle(memDescs + comm->rank), cleanupRet);
+    NCCLCHECKIGNORE(ncclDiagP2pReleaseLocalHandle(memDescs + p2pRank), cleanupRet);
     localHandleRetained = false;
   }
   if (readbackDev != nullptr) {
@@ -760,6 +855,9 @@ fail:
   }
   if (remoteOpsDev != nullptr) {
     NCCLCHECKIGNORE(ncclCudaFree(remoteOpsDev, comm->memManager), cleanupRet);
+  }
+  if (p2pRanksDev != nullptr) {
+    NCCLCHECKIGNORE(ncclCudaFree(p2pRanksDev, comm->memManager), cleanupRet);
   }
   if (localSlots != nullptr) {
     NCCLCHECKIGNORE(ncclCudaFree(localSlots, comm->memManager), cleanupRet);
@@ -783,8 +881,10 @@ fail:
                comm->rank, cleanupRet);
   }
   ret = runRet == ncclSuccess ? cleanupRet : runRet;
+  if (comm->p2pCrossClique) free(p2pRanks);
   free(edgeMatrix);
   free(setupResults);
+  free(summaries);
   free(memDescs);
   free(mappings);
   free(allResults);

@@ -10,19 +10,20 @@
 
 static constexpr int kDiagP2pThreads = 128;
 
-__global__ void diagP2pInitSlotsKernel(struct ncclDiagP2pSlot* slots, int slotCount, int dstRank) {
+__global__ void diagP2pInitSlotsKernel(struct ncclDiagP2pSlot* slots, const int* slotRanks, int slotCount,
+                                       int dstRank) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= slotCount) return;
   slots[idx].writeValue = 0;
   slots[idx].verifyValue = 0;
-  slots[idx].readPattern = ncclDiagP2pReadPattern(dstRank, idx);
+  slots[idx].readPattern = ncclDiagP2pReadPattern(dstRank, slotRanks[idx]);
 }
 
 __global__ void diagP2pRemoteWriteKernel(const struct ncclDiagP2pRemoteOp* ops, int opCount) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= opCount) return;
   const struct ncclDiagP2pRemoteOp op = ops[idx];
-  op.remoteSlots[op.srcRank].writeValue = ncclDiagP2pWritePattern(op.srcRank, op.dstRank);
+  op.remoteSlots[op.srcSlot].writeValue = ncclDiagP2pWritePattern(op.srcRank, op.dstRank);
 }
 
 __global__ void diagP2pVerifyWritesKernel(struct ncclDiagP2pSlot* slots, int slotCount) {
@@ -35,16 +36,18 @@ __global__ void diagP2pRemoteReadKernel(const struct ncclDiagP2pRemoteOp* ops, i
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= opCount) return;
   const struct ncclDiagP2pRemoteOp op = ops[idx];
-  readback[idx] = op.remoteSlots[op.srcRank].readPattern;
+  readback[idx] = op.remoteSlots[op.srcSlot].readPattern;
 }
 
 static int diagP2pBlocks(int count) {
   return (count + kDiagP2pThreads - 1) / kDiagP2pThreads;
 }
 
-ncclResult_t ncclDiagP2pInitSlots(struct ncclDiagP2pSlot* slots, int slotCount, int dstRank, cudaStream_t stream) {
+ncclResult_t ncclDiagP2pInitSlots(struct ncclDiagP2pSlot* slots, const int* slotRanks, int slotCount, int dstRank,
+                                  cudaStream_t stream) {
   if (slotCount <= 0) return ncclSuccess;
-  diagP2pInitSlotsKernel<<<diagP2pBlocks(slotCount), kDiagP2pThreads, 0, stream>>>(slots, slotCount, dstRank);
+  diagP2pInitSlotsKernel<<<diagP2pBlocks(slotCount), kDiagP2pThreads, 0, stream>>>(slots, slotRanks, slotCount,
+                                                                                   dstRank);
   CUDACHECK(cudaGetLastError());
   return ncclSuccess;
 }

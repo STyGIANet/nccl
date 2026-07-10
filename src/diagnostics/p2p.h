@@ -25,6 +25,7 @@ struct ncclDiagP2pRemoteOp {
   struct ncclDiagP2pSlot* remoteSlots;
   int srcRank;
   int dstRank;
+  int srcSlot;
 };
 
 #if defined(__CUDACC__)
@@ -51,7 +52,8 @@ static inline NCCL_DIAG_P2P_HD uint64_t ncclDiagP2pReadPattern(int dstRank, int 
 
 #undef NCCL_DIAG_P2P_HD
 
-ncclResult_t ncclDiagP2pInitSlots(struct ncclDiagP2pSlot* slots, int slotCount, int dstRank, cudaStream_t stream);
+ncclResult_t ncclDiagP2pInitSlots(struct ncclDiagP2pSlot* slots, const int* slotRanks, int slotCount, int dstRank,
+                                  cudaStream_t stream);
 ncclResult_t ncclDiagP2pRemoteWrite(const struct ncclDiagP2pRemoteOp* ops, int opCount, cudaStream_t stream);
 ncclResult_t ncclDiagP2pVerifyWrites(struct ncclDiagP2pSlot* slots, int slotCount, cudaStream_t stream);
 ncclResult_t ncclDiagP2pRemoteRead(const struct ncclDiagP2pRemoteOp* ops, int opCount, uint64_t* readback,
