@@ -21,6 +21,7 @@
 #include "compiler.h"
 #include "rma/rma.h"
 #include "sym_kernels.h"
+#include "config/collconfig.h"
 
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
@@ -30,6 +31,12 @@ NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8 * 1024 * 1024);
 NCCL_PARAM(P2pPerChannelRegNetBw, "P2P_PER_CHANNEL_REG_NET_BW", /*GB/s*/ -1); // -1 = full network bw
+
+// NCCL params accessed in per-call config values resolving.
+int64_t ncclParamMinCTAs();
+int64_t ncclParamMaxCTAs();
+int64_t ncclParamNvlsChannels();
+int64_t ncclParamCGAClusterSize();
 
 // Higher CE threshold for AllGather since TMA kernels continue to perform better till higher message sizes.
 static int64_t symCeAllGatherThreshold(struct ncclComm* comm) {
@@ -411,6 +418,13 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
       t->trafficBytes = t->count * ncclFuncTrafficPerByte(t->func, comm->nRanks);
       t->chunkSteps = BROADCAST_CHUNKSTEPS;
       t->sliceSteps = BROADCAST_SLICESTEPS;
+      // This task carries no per-call config, so inherit the comm's resolved resource settings
+      // (which already fold in any env overrides). scheduleCollTasksToPlan applies these caps
+      // unconditionally; leaving them memset-zeroed would clamp nMaxChannels to 0.
+      t->minCTAs = comm->config.minCTAs;
+      t->maxCTAs = comm->config.maxCTAs;
+      t->nvlsCTAs = comm->config.nvlsCTAs;
+      t->cgaClusterSize = comm->config.cgaClusterSize;
       ncclTaskCollSorterInsert(&planner->collSorter, t, t->trafficBytes);
       planner->nTasksColl += 1;
       ncclMemoryPoolFree(&comm->memPool_ncclTaskBcast, bcastTask);
@@ -463,7 +477,8 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
       struct ncclTaskColl* aggEnd = aggBeg->next;
       struct ncclTaskColl agg = *aggBeg;
       // We aggregate operations that are within 4X size of each other.
-      while (aggEnd != nullptr && aggEnd->trafficBytes < 4 * aggBeg->trafficBytes) {
+      while (aggEnd != nullptr && aggEnd->trafficBytes < 4 * aggBeg->trafficBytes && !aggBeg->aggIsolate &&
+             !aggEnd->aggIsolate) {
         agg.count += aggEnd->count;
         agg.trafficBytes += aggEnd->trafficBytes;
         aggEnd = aggEnd->next;
@@ -613,14 +628,31 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
       int nBatches = divUp(nPlanColls, 4); // Rough guess: 4 colls per batch.
       if (!ncclTestBudget(budget, nBatches, workBytes + workNode->size)) goto plan_full;
 
+      // A per-call-configured collective is scheduled alone in its own plan so its
+      // resource caps are realized exactly rather than blended into the plan's shared
+      // per-kind channel budget.
+      bool taskAggIsolate = task->aggIsolate;
+      if (taskAggIsolate && nPlanColls > 0) goto plan_full; // leave it to start a fresh plan
+
       nPlanColls += 1;
       workBytes += workNode->size;
       int kind = 2 * task->isCollnet + task->isNvls;
       trafficBytes[kind] += std::max(MinTrafficPerChannel, task->trafficBytes);
+      // minCTAs/maxCTAs are resolved (env > per-call > comm) at task-append time, so they are
+      // applied unconditionally; comm defaults (minCTAs=1, maxCTAs=MAXCHANNELS) are no-ops on the base.
+      // We must check the minCTAs first to avoid the case where task->minCTAs > task->maxCTAs.
+      // For example, comm's min/max CTAs set to [8, 32] and config only set maxCTAs=4.
+      // We would have task->minCTAs=8 and task->maxCTAs=4.
+      task->nMaxChannels = std::max<int>(task->nMaxChannels, task->minCTAs);
+      task->nMaxChannels = std::min<int>(task->nMaxChannels, task->maxCTAs);
+      // nvlsCTAs has no comm default (UNDEF == no cap), so it is applied only when resolved to a value.
+      if (task->isNvls && task->nvlsCTAs != NCCL_CONFIG_UNDEF_INT)
+        task->nMaxChannels = std::min<int>(task->nMaxChannels, task->nvlsCTAs);
       nChannels[kind] += task->nMaxChannels;
       nChannels[kind] = std::min(nChannels[kind], nMaxChannels[kind]);
       task = task->next;
       workNode = workNode->next;
+      if (taskAggIsolate) goto plan_full; // configured collective is alone in this plan
     }
   plan_full:;
   } while (0);
@@ -833,6 +865,8 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
 
     plan->channelMask |= (2ull << devWork->channelHi) - (1ull << devWork->channelLo);
     plan->threadPerBlock = std::max(plan->threadPerBlock, task->nWarps * WARP_SIZE);
+    // per-coll cgaClusterSize is applied to the plan. User should use consistent cgaClusterSize in a Group.
+    plan->cgaClusterSize = task->cgaClusterSize;
     if (!plan->kernelSpecialized) {
       plan->kernelFn = ncclDevKernelForFunc[task->devFuncId];
       plan->kernelSpecialized = ncclDevKernelForFuncIsSpecialized[task->devFuncId];
@@ -841,9 +875,9 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
     plan->groupApiEventHandle = task->groupApiEventHandle;
 
     if (comm->rank == 0) {
-      INFO(NCCL_TUNING, "%s: %ld Bytes -> Algo %s proto %s channel{Lo..Hi}={%d..%d}", ncclFuncToString(task->func),
-           task->count * ncclTypeSize(task->datatype), ncclAlgoToString(task->algorithm),
-           ncclProtoToString(task->protocol), devWork->channelLo, devWork->channelHi);
+      INFO(NCCL_TUNING, "%s: %ld Bytes -> Algo %s proto %s channel{Lo..Hi}={%d..%d} cgaClusterSize %d",
+           ncclFuncToString(task->func), task->count * ncclTypeSize(task->datatype), ncclAlgoToString(task->algorithm),
+           ncclProtoToString(task->protocol), devWork->channelLo, devWork->channelHi, plan->cgaClusterSize);
 
       if (task->isCollnet) {
         TRACE(NCCL_COLL,
@@ -1626,6 +1660,7 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
       plan->persistent = persistent;
       // finishPlan() promotes ncclDevWorkStorageType[Fifo|Persistent]->Args if the work can fit.
       plan->workStorageType = persistent ? ncclDevWorkStorageTypePersistent : ncclDevWorkStorageTypeFifo;
+      plan->cgaClusterSize = comm->config.cgaClusterSize;
 
       if (planner->nTasksRma != 0) {
         NCCLCHECKGOTO(scheduleRmaTasksToPlan(comm, plan), result, failure);
@@ -1811,7 +1846,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   if (CUDART_VERSION >= 11080 && driverVersion >= 11080) {
 #if CUDART_VERSION >= 11080
     int compCap = comm->compCap;
-    unsigned int clusterSize = (compCap >= 90) ? comm->config.cgaClusterSize : 0;
+    unsigned int clusterSize = (compCap >= 90) ? plan->cgaClusterSize : 0;
 
     CUlaunchConfig launchConfig = {0};
     CUlaunchAttribute launchAttrs[6] = {};
@@ -2588,7 +2623,8 @@ static ncclResult_t collTaskAppend(struct ncclComm* comm, struct ncclInfo* info,
   NCCLCHECK(ncclProfilerRecordGroupApiEventState(ncclProfilerGroupStartApiStop));
   NCCLCHECK(ncclProfilerStartCollApiEvent(info, isGraphCaptured));
 
-  if (info->coll == ncclFuncBroadcast && ncclParamAllgathervEnable() && !comm->ccEnable) {
+  if (info->coll == ncclFuncBroadcast && ncclParamAllgathervEnable() && !comm->ccEnable &&
+      info->collConfig.size == 0) { // collConfig.size == 0 means no user config passed
     // Must be in thread local group before tasks can be alloc'd in `comm->memScoped`.
     struct ncclTaskBcast* t =
       ncclMemoryPoolAlloc<struct ncclTaskBcast>(&comm->memPool_ncclTaskBcast, &comm->memPermanent);
@@ -2628,6 +2664,21 @@ static ncclResult_t collTaskAppend(struct ncclComm* comm, struct ncclInfo* info,
     t->opDev = opDev; // C++ struct assignment
     t->chunkSteps = info->chunkSteps;
     t->sliceSteps = info->sliceSteps;
+    t->aggIsolate = ncclCollConfigNeedAggIsolate(&info->collConfig);
+    // Resolve the config options (env > per-call > comm) here at task-append:
+    // info->collConfig holds the raw per-call values.
+    NCCL_CONFIG_SET(t, minCTAs, ncclParamMinCTAs(), info->collConfig.minCTAs, comm->config.minCTAs, 1, MAXCHANNELS);
+    NCCL_CONFIG_SET(t, maxCTAs, ncclParamMaxCTAs(),
+                    (std::min(info->collConfig.maxCTAs, comm->config.maxCTAs)) /* clamp config's maxCTAs by comm's */,
+                    comm->config.maxCTAs, 1, MAXCHANNELS);
+    if (t->minCTAs > t->maxCTAs) {
+      INFO(NCCL_COLL, "Task minCTAs(%d) is larger than maxCTAs(%d), reset task minCTAs to 1", t->minCTAs, t->maxCTAs);
+      t->minCTAs = 1;
+    }
+    NCCL_CONFIG_SET(t, nvlsCTAs, ncclParamNvlsChannels(), info->collConfig.nvlsCTAs, comm->config.nvlsCTAs, 1,
+                    MAXCHANNELS);
+    NCCL_CONFIG_SET(t, cgaClusterSize, ncclParamCGAClusterSize(), info->collConfig.cgaClusterSize,
+                    comm->config.cgaClusterSize, 0, NCCL_MAX_CGA_CLUSTER_SIZE);
     t->eActivationMask = ncclProfilerApiState.eActivationMask;
     t->groupApiEventHandle = ncclProfilerApiState.groupApiEventHandle;
     t->collApiEventHandle = ncclProfilerApiState.collApiEventHandle;

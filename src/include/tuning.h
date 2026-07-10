@@ -69,6 +69,8 @@ struct ncclTuningInput_t {
   bool symAligned16B; // Check for TMA eligibility in sym scheduler
   int captured;
   int inPlace;
+  int minCTAs;  // resolved lower CTA bound (env > per-call > comm)
+  int maxCTAs;  // resolved upper CTA bound (env > per-call > comm)
 };
 
 struct ncclTuningContext_t {

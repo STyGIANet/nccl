@@ -236,6 +236,14 @@ struct ncclTaskColl {
   // Inclusive channel range this task ran on; mirrors devWork->channelLo/Hi.
   uint8_t channelLo;
   uint8_t channelHi;
+
+  // Per-collective config related members
+  bool aggIsolate; // Whether task needs to be isolated from aggregation because of config options.
+                   // Config options related to resource and algorithm usually need the isolation.
+  int minCTAs;
+  int maxCTAs;
+  int nvlsCTAs;
+  int cgaClusterSize;
 };
 
 struct ncclTaskBcast {
@@ -348,6 +356,7 @@ struct ncclKernelPlan {
   // Source of ncclTaskP2p::p2pPairId; incremented per addP2pToPlan() call.
   uint16_t p2pPairCounter;
   int threadPerBlock;
+  int cgaClusterSize;  // per-launch CGA cluster size; defaults to comm->config.cgaClusterSize
 
   int collOpCount; // Number of collectives in this plan.
   int nWorkBatches; // Number of work batches.

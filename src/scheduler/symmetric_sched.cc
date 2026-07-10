@@ -148,7 +148,13 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
         count = alignUp(task->count, cellCount);
         countTotal += count;
         if (count > countMax) countMax = count;
-        if (ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, nWorks + 1) > comm->workArgsBytes || task->next == nullptr) {
+        // A configured task forms its own singleton batch: end here if this task is
+        // configured (it is the head), or if the next task is configured (so it starts
+        // its own batch). This realizes the per-call caps exactly and never ignores a
+        // non-head configured task.
+        bool configBoundary = task->aggIsolate || (task->next != nullptr && task->next->aggIsolate);
+        if (ncclSymkDevWorkArgs::calcArgsSize(MAXCHANNELS, nWorks + 1) > comm->workArgsBytes || task->next == nullptr ||
+            configBoundary) {
           task->isSymLast = 1;
           break;
         }
@@ -168,6 +174,8 @@ ncclResult_t ncclMakeSymmetricTaskList(struct ncclComm* comm, struct ncclTaskCol
       input.nWorks = nWorks;
       input.winRegType = headTask->winRegType;
       input.symAligned16B = symBatchAligned16B(headTask);
+      input.minCTAs = headTask->minCTAs;
+      input.maxCTAs = headTask->maxCTAs;
       NCCLCHECK(ncclGetCollNetSupport(comm, headTask, &input.collNetSupport));
       NCCLCHECK(ncclGetRegBuff(comm, headTask, &input.regBuff));
       struct ncclTuningResult_t bestTuning = NCCL_TUNING_RESULT_INIT;
@@ -257,6 +265,8 @@ ncclResult_t ncclSymmetricTaskScheduler(struct ncclComm* comm,
     workCount++;
     totalCount += alignUp(task->count, cellCount);
     logCount += task->count;
+    // per-coll cgaClusterSize is applied to the plan. User should use consistent cgaClusterSize in a Group.
+    if (task->cgaClusterSize != NCCL_CONFIG_UNDEF_INT) plan->cgaClusterSize = task->cgaClusterSize;
     if (task->isSymLast == 1) break;
     task = task->next;
   }

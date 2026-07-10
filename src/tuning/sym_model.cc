@@ -107,18 +107,23 @@ int ncclTuningCalcSatBlocksReduceScatterRailA2A(struct ncclComm* comm, bool ldmc
 // Given the kernel and bytes, return the minimum number of blocks to run on such that
 // perf is 99% of running at max blocks, and return the estimate runtime for that
 // block count.
-static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks);
-static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks);
+static void queryModel_gin(struct ncclTuningInput_t* input, ncclSymkKernelId k, size_t nBytes, float* timeUs,
+                           int* nBlocks);
+static void queryModel_lsa(struct ncclTuningInput_t* input, ncclSymkKernelId k, size_t nBytes, float* timeUs,
+                           int* nBlocks);
 
-static void queryModel(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks) {
+static void queryModel(struct ncclTuningInput_t* input, ncclSymkKernelId k, size_t nBytes, float* timeUs,
+                       int* nBlocks) {
   if (ncclSymkGinKernelMask() >> k & 1) {
-    queryModel_gin(comm, k, nBytes, timeUs, nBlocks);
+    queryModel_gin(input, k, nBytes, timeUs, nBlocks);
   } else {
-    queryModel_lsa(comm, k, nBytes, timeUs, nBlocks);
+    queryModel_lsa(input, k, nBytes, timeUs, nBlocks);
   }
 }
 
-static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks) {
+static void queryModel_gin(struct ncclTuningInput_t* input, ncclSymkKernelId k, size_t nBytes, float* timeUs,
+                           int* nBlocks) {
+  struct ncclComm* comm = input->comm;
   struct ncclSymkState* symk = &comm->symkState;
   // ncclTeam world = ncclTeamWorld(comm);
   // ncclTeam lsa = ncclTeamLsa(comm);
@@ -126,13 +131,15 @@ static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
   double lsaBw = ncclTuningGetLsaBw(comm);
   double ginLat = ncclTuningGetGinLat(comm);
   double ginBw = ncclTuningGetGinBw(comm);
-  int nMaxBlocks = std::min<int>(comm->config.maxCTAs, ncclSymkMaxBlocks);
+  // maxCTAs/minCTAs are resolved (env > per-call > comm) at task-append time.
+  int nMaxBlocks = std::min<int>(input->maxCTAs, ncclSymkMaxBlocks);
   if (k == ncclSymkKernelId_AllGather_RailRing_LsaSTMC) {
     nMaxBlocks = std::min<int>(nMaxBlocks, divUp((comm->cudaArch < 1000 ? 16 : 32), comm->nvlsResources->nHeads));
   }
-  int nMinBlocks = comm->config.minCTAs;
+  int nMinBlocks = input->minCTAs;
   int nUserCTAs = std::min<int>(ncclSymkMaxBlocks, ncclParamSymCTAs());
   if (nUserCTAs > 0) nMinBlocks = nMaxBlocks = nUserCTAs;
+  if (nMinBlocks > nMaxBlocks) nMinBlocks = nMaxBlocks;
 
   *timeUs = FLT_MAX;
   *nBlocks = 0;
@@ -179,9 +186,11 @@ static void queryModel_gin(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
   }
 }
 
-static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBytes, float* timeUs, int* nBlocks) {
+static void queryModel_lsa(struct ncclTuningInput_t* input, ncclSymkKernelId k, size_t nBytes, float* timeUs,
+                           int* nBlocks) {
   constexpr double LL_BusFactor = 9; // 2X the bytes, plus some processing, plus no unrolling
 
+  struct ncclComm* comm = input->comm;
   int nRanks = comm->nRanks;
   int nMaxBlocks = ncclSymkMaxBlocks;
   int nMaxBlocksNvls = divUp((comm->cudaArch < 1000 ? 16 : 32), nRanks);
@@ -270,10 +279,12 @@ static void queryModel_lsa(struct ncclComm* comm, ncclSymkKernelId k, size_t nBy
     }
   }
 
-  nMaxBlocks = std::min<int>(nMaxBlocks, comm->config.maxCTAs);
-  int nMinBlocks = comm->config.minCTAs;
+  // maxCTAs/minCTAs are resolved (env > per-call > comm) at task-append time.
+  nMaxBlocks = std::min<int>(nMaxBlocks, input->maxCTAs);
+  int nMinBlocks = input->minCTAs;
   int nUserCTAs = std::min<int>(ncclSymkMaxBlocks, ncclParamSymCTAs());
   if (nUserCTAs > 0) nMinBlocks = nMaxBlocks = nUserCTAs;
+  if (nMinBlocks > nMaxBlocks) nMinBlocks = nMaxBlocks;
 
   // Even CTA counts are preferred for optimal performance, except for when CTAs==1
   if (nMinBlocks != nMaxBlocks) {
@@ -349,7 +360,7 @@ ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const inputs, stru
   float kTime = 0.0f;
   int kBlocks = 0;
   constexpr float smPenalty = .025f; // 2.5% percent increase in time per SM
-  queryModel(inputs->comm, (ncclSymkKernelId)tuning->symKernelId, inputs->nBytes, &kTime, &kBlocks);
+  queryModel(inputs, (ncclSymkKernelId)tuning->symKernelId, inputs->nBytes, &kTime, &kBlocks);
 
   tuning->timeUs = kTime * (1.0f + smPenalty * kBlocks);
   tuning->nChannels = kBlocks;
